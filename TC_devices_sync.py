@@ -1,3 +1,5 @@
+#!/usr/bin/env python3.8
+
 import requests
 import json
 import sys
@@ -11,42 +13,64 @@ from cryptography.fernet import Fernet
 import logging
 import numpy as np
 import pandas as pd
+from io import StringIO
 import pprint
 import argparse
 import cmath
 import ast
+import chardet
 
 
-"""This program reads in a credentials file and uses that info to connect to a NetScout nGeniusONE server and authenticate.
-Then it looks for a CSV file with "current" as part of its name in the local directory.
-If the 'current' CSV file is found, it will read that file into a pandas dataframe for comparison later.
-Also, if it finds one, it will rename the file to create a backup copy in the local directory with "archive" in the name.
-Then it makes an API request to get the configuration attributes for the requested config as they exist "right now" in the system.
-Then it takes that "right now" config data in json format and translates it into a pandas dataframe that
- matches the schema of the "current" dataframe.
-If it doesn't find a "current" CSV files (firt time run), it will use the config settings it reads from nG1 server and
- will create a "current" CSV file.
-Then it writes this "right now" dataframe out to a date-time stamped CSV file that replaces the "Current" CSV file.
-Then the program compares the "current" dataframe to the "right now" dataframe to see if there are any changes.
-If there are added configuration elements, deleted elements or modified elements, this information will be written to "diff" CSV file.
-The operator can examine the "diff" CSV file to understand what has changed since the last time this program ran.
-Note: To connect to an nG1 server, you must first run the script cred_script_nG1.py. This is a menu-driven,
- interactive program that can run in a DOS command console or a MAC/Linux console.
-After running that script, the ng1_config_sync.py can be run without any human interaction.
-The user must specify which type of config they want (sites, client_comm, interfaces or apps).
-They do this by including an argument when they run the program. Example; ./ng1_config_sync --config sites.
-The example assumes they are running the binary version of this program and not the .py version.See below.
-They can also specify a "--set" flag that tells the program to also write any config differences found to the nG1 API.
-Note: For the case where you are running on a Linux server that does not have access to the internet, or you
- don't need the source code, there are binary versions of both programs in this repo that allow you to run
- it like a bash script (./), The version of python used, the python program, modules and all libraries needed
- are wrapped in. No dependencies needed. Just upload the binaries, chmod 777 to both filenames and run with ./
-Any runtime info or errors are written to a date-time stamped log file created in the local directory.
-This program was written by John Giles, NetScout SE. Initial version 0.1 created January 2021.
 """
+A python program for Transcanada that integrates MIB II device attributes found in their Solarwinds CSV export
+to the nGeniusONE device configuration to produce a specific Network Service name that contains the desired fields from both.
+Then that network service is placed into the dashboard hierarchy based on location names used to produce the Network Service name (label).
+The new network service is added to the correct domain in the dashboard hierarchy.
+
+"""
+
+__version__ = "0.1"
+__status__ = "beta"
+__author__ = "John Giles"
+__date__ = "2021 May 28th"
+__env__= "Windows/Linux"
+__Language__ = "Python v3"
 
 # Disable the warnings for ignoring Self-Signed Certificates
 requests.packages.urllib3.disable_warnings()
+
+class ng1_device():
+
+    def __init__(self, deviceName, deviceIPAddress, status, deviceType, activeInterfaces, version):
+        self.deviceName = deviceName
+        self.deviceIPAddress = deviceIPAddress
+        self.status = status
+        self.deviceType = deviceType
+        self.activeInterfaces = activeInterfaces
+        self.version = version
+
+    def get_descriptions(self, seperator):
+        return self.deviceName + seperator + self.deviceIPAddress + seperator + self.status + seperator + self.deviceType + seperator + str(self.activeInterfaces) + seperator + self.version
+
+    def get_items(self, seperator):
+        return 'deviceName' + seperator + 'deviceIPAddress' + seperator + 'status' + seperator + 'deviceType' + seperator + 'activeInterfaces' + seperator + 'version'
+
+class ng1_interface():
+
+    def __init__(self, deviceName, deviceIPAddress, interfaceName, interfaceNumber, interfaceSpeed, interfaceLinkType, status):
+        self.deviceName = str(deviceName)
+        self.deviceIPAddress = str(deviceIPAddress)
+        self.interfaceName = str(interfaceName)
+        self.interfaceNumber = str(interfaceNumber)
+        self.interfaceSpeed = str(interfaceSpeed)
+        self.interfaceLinkType = str(interfaceLinkType)
+        self.status = str(status)
+
+    def get_descriptions(self, seperator):
+        return self.deviceName + seperator + self.deviceIPAddress + seperator + self.interfaceName + seperator + str(self.interfaceNumber) + seperator + self.interfaceSpeed + seperator + self.interfaceLinkType + seperator + self.status
+
+    def get_items(self, seperator):
+        return 'deviceName' + seperator + 'deviceIPAddress' + seperator + 'interfaceName' + seperator + 'interfaceNumber' + seperator + 'interfaceSpeed' + seperator + 'interfaceLinkType' + seperator + 'status'
 
 class Credentials:
     """
@@ -122,70 +146,73 @@ class ApiSession:
         self.credentials = ''
 
 def flags_and_arguments(prog_version, logger):
-    """Allows the user to input a mandatory argument of --config to specify which nG1 configuration they want to modify.
-    Also allows the user to add optional flags to the launch command.
-    Adding to --set flag will tell the program to both get the nG1 config and set the nG1 config to
-     match the "current" config file.
-    If the --set flag is not specified by the user, the program will gather the current nG1 config and compare it
-     to the "current" config file. It will produce the config differences "change log" file and exit without
-     doing any set commands to nG1 (will not sync the current file to the actual nG1 configuration).
-    The --config argument is mandatory. This program can sync different types of nG1 configurations.
-     So the user must specify which type of configuration they want to get or sync to.
+    """Allows the user add optional flags to the launch command.
+    Adding --set flag will tell the program to both get the nG1 config and set the nG1 config to
+     match the "current" Solarwinds file.
+    If the --set flag is not specified by the user, the program will gather the current nG1 config and
+    the current Solarwinds config. Then it will merge the required columns and produce a config CSV file.
+    Then it will exit without performing any set commands to nG1 (will not sync the current Solarwinds file
+    to the actual nG1 configuration).
     :program_version: Pass in the program version so the user can type --version.
     :logger: An instance of the logger class so we can write error messages if they occur.
     """
     try:
         # Define the program description
-        text = 'This program is used to configure nGeniusONE either mannually or programmatically.'
+        text = 'This program is used to configure nGeniusONE network services and dashboard domains.'
         # Initiate the parser with a description
         parser = argparse.ArgumentParser(description=text)
-        parser.add_argument('--set', action="store_true", help='set the nGeniusONE config to match the xxxx_config_current.csv', dest='set', default=False)
-        parser.add_argument('--version', action="store_true", help="show program version and exit", dest='version', default=False)
-        parser.add_argument('--config', dest='config_type', required=True, action="store", choices=['sites', 'client_comm', 'interfaces', 'apps'],
-                    help="specify which nGeniusONE configuration you want; sites, client_comm, interfaces or apps")
+        parser.add_argument('--set', '-s', action="store_true", help='set the nGeniusONE config to match the solarwindd_config_current.csv', dest='set', default=False)
+        parser.add_argument('--version', '-v', action="store_true", help="show program version and exit", dest='version', default=False)
         # Parse the arguments and create a result.
         args = parser.parse_args()
-        config_type = args.config_type
-        if args.version == True: # They typed either "-V" or "--version" flags.
+        if args.version == True: # They typed either "-v" or "--version" flags.
             print(f'Program version is: {prog_version}')
             sys.exit()
-        if args.set == True: # They typed the "--set" flag.
-            is_set_config_true = True # I need to do a get and a set operation.
+        if args.set == True: # They typed either "-s" or "--set" flags.
+            is_set_config_true = True # I need to do both a get and a set operation.
         else:
             is_set_config_true = False # I only need to do a get operation.
-        status = True
 
-        return status, is_set_config_true, config_type
+        return True, is_set_config_true
     except Exception as e: # An error has occurred, log the error and return a status of False.
-        logger.exception(f'[ERROR] Parsing the arguments has failed')
+        logger.exception(f'[ERROR] Parsing the run command arguments has failed')
         logger.exception(f"[ERROR] Exception error is:\n{e}")
-        status = False
         is_set_config_true = False
-        config_type = ''
 
-        return status, is_set_config_true, config_type
+        return False, is_set_config_true
 
-def create_logging_function(config_type):
+def create_logging_function(log_filename):
     """Creates the logging function and specifies a log file to write to that is date-time stamped.
-    :config_type: The type of configuration argument that the user specified when they launched the program.
-    :return: The logger instance if successfully completed, and the logging filename. Return False if not successful.
+    :log_filename: The name of the log file to write to.
+    :return: The logger instance if successfully completed, Return False if not successful.
     """
     now = datetime.now()
     date_time = now.strftime("%Y_%m_%d_%H%M%S") # Used for timestamping filenames.
-    log_filename = 'nG1_config_sync_' + config_type + '_' + date_time + '.log' #The name of the log file we will write to.
 
     try:
-        # Call the basicConfig module and pass in the log file filename.
-        logging.basicConfig(filename=log_filename, format='%(asctime)s %(message)s', filemode='a+')
-        # Call the logging class and create a logger object.
-        logger = logging.getLogger()
-        # Set the logging level to the lowest setting so that all logging messages get logged.
-        logger.setLevel(logging.INFO) # Allowable options include DEBUG, INFO, WARNING, ERROR, and CRITICAL.
-        # Write the current date and time to the log file to at least show when the program was executed.
-        logger.info(f"*** Start of logs {date_time} ***")
-        return logger, log_filename
+        logger = logging.getLogger('TC_devices_sync LOG')
+        logger.setLevel(logging.DEBUG)
+
+        ch = logging.StreamHandler()
+        ch.setLevel(logging.INFO)
+
+        fh = logging.FileHandler(log_filename)
+        fh.setLevel(logging.DEBUG)
+
+        formatter1 = logging.Formatter('%(levelname)s - %(message)s')
+        formatter2 = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+        ch.setFormatter(formatter1)
+        fh.setFormatter(formatter2)
+
+        logger.addHandler(ch)
+        logger.addHandler(fh)
+
+        logger.debug(f"*** Start of logs {date_time} ***")
+        return logger
     except:
-        return False
+        print('Unable to create log file.')
+        return None
 
 def get_decrypted_credentials(cred_filename, ng1key_file, logger):
     """Read in the encrypted user or user-token credentials from a local CredFile.ini file.
@@ -193,7 +220,7 @@ def get_decrypted_credentials(cred_filename, ng1key_file, logger):
     :cred_filename: A string that is the name of the cred_filename to read in.
     :ng1key_file: A string that is the name of the ng1's key file to read in.
     :return: If successful, return the creds as a class instance that contains all the params needed to
-     connect to the ng1 server via HTTP or HTTPS and authenticate the user. 
+     connect to the ng1 server via HTTP or HTTPS and authenticate the user.
     :logger: An instance of the logger class so we can write error messages if they occur.
     Return False if any error occurrs.
     """
@@ -206,13 +233,11 @@ def get_decrypted_credentials(cred_filename, ng1key_file, logger):
                 ng1key = ng1key_in.read().encode() # Read the key as a string.
                 fng1 = Fernet(ng1key) # Create an instance of the Fernet class to hold the key info.
         except IOError as e: # Handle file I/O errors.
-            print(f"\n[ERROR] Fatal error: Unable to open ng1key file: {ng1key_file}")
+            logger.critical(f"Unable to open ng1key file: {ng1key_file}")
+            logger.critical(f'I/O error({e.errno}):  {e.strerror}.')
             print('Did you run the cred_script_nG1.py first?')
-            logger.critical(f"[ERROR] Fatal error: Unable to open ng1key file: {ng1key_file}")
-            logger.error(f'[ERROR] I/O error({e.errno}):  {e.strerror}.')
-        except Exception as e:
+        except Exception:
             logger.exception(f"[ERROR] Fatal error: Unable to open ng1key_file: {ng1key_file}")
-            logger.exception(f"Exception error is:\n{e}")
             return False
         with open(cred_filename, 'r') as cred_in:
             lines = cred_in.readlines()
@@ -231,12 +256,11 @@ def get_decrypted_credentials(cred_filename, ng1key_file, logger):
             creds.ng1hostname = lines[1].partition('=')[2].rstrip("\n")
             creds.ng1Port = lines[5].partition('=')[2].rstrip("\n")
     except IOError as e: # Handle file I/O errors.
-        logger.error(f"[ERROR] Fatal error: Unable to open cred_filename: {cred_filename}")
-        logger.error(f'[ERROR] I/O error({e.errno}):  {e.strerror}.')
+        logger.error(f"Unable to open cred_filename: {cred_filename}")
+        logger.error(f'I/O error({e.errno}):  {e.strerror}.')
         return False
-    except Exception as e: # Handle other unexpected errors.
-        logger.exception(f"[ERROR] Fatal error: Unable to open cred_filename: {cred_filename}")
-        logger.exception(f"[ERROR] Exception error is:\n{e}")
+    except Exception: # Handle other unexpected errors.
+        logger.exception(f"Fatal error: Unable to open cred_filename: {cred_filename}")
         return False
 
     return creds # The function was successful.
@@ -245,14 +269,9 @@ def determine_ng1_api_params(creds, logger):
     """Based on the values in the creds instance, determine what all the nG1 API connection and authentication parameters are.
     :creds: A class instance that holds all our nG1 connection and user authentication credentials values.
     :logger: An instance of the logger class so we can write error messages if they occur.
-    :return: If successful, return the nG1 API parameters for ng1_host, headers, cookies and credentials.
-    Return False if any error occurrs.
+    :return: If successful, return status = True and the session = the nG1 API parameters for ng1_host, headers, cookies and credentials.
+    Return None and status = False if any error occurrs.
     """
-    # You can use an authentication token named NSSESSIONID obtained from the User Management module in nGeniusONE (open the user and click Generate New Key).
-    # This token can be passed to nG1 as a cookie so that we can autheticate.
-    # If we are using the token rather than credentials, we will set credentials to 'Null'.
-    # If we are using the username:password rather than a token, we will set cookies to 'Null'.
-    # Initialize the return parameters just in case we have an error and need to return False.
 
     # Create an ApiSession instance to hold our API Session parameters. Use these params for all subsequent API calls.
     session = ApiSession()
@@ -272,10 +291,8 @@ def determine_ng1_api_params(creds, logger):
         elif creds.ng1Port == '443' or creds.ng1Port == '8443':
             web_protocol = 'https://'
         else: # Not a standard port, so I don't know if I should use HTTP or HTTPS.
-            print(f'[CRITICAL] nG1 destination port {creds.ng1Port} is not equal to 80, 8080, 443 or 8443')
-            logger.critical(f'[CRITICAL] nG1 destination port {creds.ng1Port} is not equal to 80, 8080, 443 or 8443')
-            status = False
-            return status, session # As we are returning multiple params, we will status to set True or False.
+            logger.critical(f'nG1 destination port {creds.ng1Port} is not equal to 80, 8080, 443 or 8443')
+            return False, None # Return status = False and session = None
         # Build up the base URL to use for all nG1 API calls.
         session.ng1_host = web_protocol + creds.ng1hostname + ':' + creds.ng1Port
 
@@ -286,14 +303,11 @@ def determine_ng1_api_params(creds, logger):
             'Accept': "application/json",
             'Content-Type': "application/json"
         }
-    except Exception as e:
-        logger.exception(f"[ERROR] Fatal error: Unable to create log file function for: {log_filename}")
-        logger.exception(f"[ERROR] Exception error is:\n{e}")
-        status = False
-        return status, session # As we are returning multiple params, we will status to set True or False.
+    except Exception:
+        logger.exception(f'Unable to create log file function for: {log_filename}')
+        return False, None # Return status = False and session = None
 
-    status = True # Success
-    return status, session # As we are returning multiple params, we will status to set True or False.
+    return True, session # As we are returning multiple params, we will status to set True or False.
 
 def open_session(session, logger):
     """Open an HTTP or HTTPS API session to the nG1. Reuse that session for all commands until finished.
@@ -316,25 +330,21 @@ def open_session(session, logger):
             # Null cookies tells us to use the credentials string. We will use this post and pass in the credentials string.
             post = requests.request("POST", url, headers=session.headers, verify=False, auth=(ng1username, ng1password_pl))
         else:
-            # print(f'[CRITICAL] opening session to URL: {url} failed')
-            logger.critical(f'[CRITICAL] opening session to URL: {url} failed.')
-            # print('Unable to determine authentication by credentials or token')
-            logger.critical('[CRITICAL] Unable to determine authentication by credentials or token.')
+            logger.critical(f'opening session to URL: {url} failed.')
+            logger.critical('Unable to determine authentication by credentials or token.')
             return False
         if post.status_code == 200: # The nG1 API call was successful.
-            print(f'[INFO] Opened Session to URL: {url} Successfully')
-            logger.info(f'[INFO] Opened Session to URL: {url} Successfully')
+            logger.info(f'Opened Session to URL: {url} Successfully')
             # Utilize the returned cookie for future authentication. Keep this session open for all nG1 API calls.
             session.cookies = post.cookies # Set the session.cookies param to equal the Web RequestsCookieJar value.
-            return True # Success!
+            return True
         else: # We reached the nG1, but the request has failed. A different HTTP code other than 200 was returned.
-            logger.critical(f'[CRITICAL] opening session to URL: {url} failed. Response Code: {post.status_code}. Response Body: {post.text}.')
+            logger.critical(f'opening session to URL: {url} failed. Response Code: {post.status_code}. Response Body: {post.text}.')
             return False
-    except Exception as e: # This means we likely did not reach the nG1 at all. Check your VPN or internet connection.
-        logger.critical(f'[CRITICAL] Opening the nG1 API session has failed')
-        logger.critical(f'[CRITICAL] Cannot reach URL: {url}')
-        logger.critical(f'[CRITICAL] Check the VPN or internet connection')
-        logger.exception(f"[ERROR] Exception error is:\n{e}")
+    except Exception: # This means we likely did not reach the nG1 at all. Check your VPN or internet connection.
+        logger.exception('Opening the nG1 API session, an exception has occurred.')
+        logger.critical(f'Cannot reach URL: {url}')
+        logger.critical('Check the VPN or internet connection')
         return False
 
 def close_session(session, logger):
@@ -350,19 +360,426 @@ def close_session(session, logger):
         close = requests.request("POST", url, headers=session.headers, verify=False, cookies=session.cookies)
 
         if close.status_code == 200: # The nG1 API call was successful.
-            print('[INFO] Closed nG1 API Session Successfully')
-            logger.info('[INFO] Closed nG1 API Session Successfully')
+            logger.info('Closed nG1 API Session Successfully')
             return True # Success! We closed the API session.
         else: # The nG1 API call failed.
-            logger.error(f'[ERROR] closing session failed. Response Code: {close.status_code}. Response Body: {close.text}.')
+            logger.error(f'closing nG1 API session failed. Response Code: {close.status_code}. Response Body: {close.text}.')
             return False
-    except Exception as e:
+    except Exception:
         # This means we likely did not reach the nG1 at all. Check your VPN or internet connection.
-        logger.error(f'[CRITICAL] Closing the nG1 API session has failed')
-        logger.exception(f"Exception error is:\n{e}")
-        print('[CRITICAL] Closing the nG1 API session has failed')
-        print('We did not reach the nG1. Check your VPN or internect connection')
+        logger.exception('Closing the nG1 API, an exception has occurred.')
+        logger.critical('We did not reach the nG1. Check your VPN or internect connection')
         return False
+
+def get_devices(session, logger):
+    """Use the nG1 API to get the current device configuration in the system.
+    :session: An instance of the ApiSession class that holds all our API session params.
+    :logger: An instance of the logger class to write to in case of an error.
+    :return: If successful, return stauts = True and the the devices object.
+    Return status = False and None if there are any errors or exceptions.
+    """
+    uri = "/ng1api/ncm/devices"
+    url = session.ng1_host + uri
+    try:
+        # perform the HTTPS API call to get the devices information
+        get = requests.get(url, headers=session.headers, verify=False, cookies=session.cookies)
+
+        if get.status_code == 200:
+            # success
+            logger.info(f'get devices nG1 API request Successful')
+            #print('MIB II Devices: ')
+            #print('No.: deviceName\tdeviceIPAddress\tstatus\tdeviceType\tactiveInterfaces\tversion')
+            # return the json object that contains the site information
+            #return get.json()
+            json_data=json.loads(get.text)
+            devices_count=len(json_data['deviceConfigurations'])
+            devices=[]
+            for i in range(devices_count):
+                if json_data['deviceConfigurations'][i]['deviceType'] == 'Router/Switch':
+                    json_data['deviceConfigurations'][i]['version'] = "N/A"
+                    device=ng1_device(json_data['deviceConfigurations'][i]['deviceName'],
+                    json_data['deviceConfigurations'][i]['deviceIPAddress'], json_data['deviceConfigurations'][i]['status'],
+                    json_data['deviceConfigurations'][i]['deviceType'], json_data['deviceConfigurations'][i]['activeInterfaces'],
+                    json_data['deviceConfigurations'][i]['version'])
+                    devices.append(device)
+                    #print(str(i+1) + ': ' + device.get_descriptions('\t'))
+            return True, devices
+        else:
+            logger.error(f'get devices nG1 API request failed.')
+            logger.error(f'Response Code: {get.status_code}. Response Body: {get.text}.')
+            return False, None
+    except Exception: # Handle other unexpected errors.
+        logger.exception(f'get devices nG1 API request failed')
+        logger.exception(f'URL sent is: {url}')
+        return False, None
+
+def get_interfaces(device, session, logger):
+
+    """Use the nG1 API to get the current interface configuration for each device in the system.
+    :session: An instance of the ApiSession class that holds all our API session params.
+    :logger: An instance of the logger class to write to in case of an error.
+    :return: If successful, return the interfaces info in JSON format. Return status = True.
+    Return status = False and None if there are any errors or exceptions.
+    """
+    uri = "/ng1api/ncm/devices/" + device.deviceName + "/interfaces"
+    url = session.ng1_host + uri
+
+    try:
+        # perform the HTTPS API call to get the devices information
+        get = requests.get(url, headers=session.headers, verify=False, cookies=session.cookies)
+
+        if get.status_code == 200:
+            # success
+            logger.info(f'get interfaces for {device.deviceName} nG1 API request Successful')
+            interfaces=[]
+            #print('MIB II Device Interfaces: ')
+            #print('No.: deviceName\tinterfaceName\tinterfaceNumber\tinterfaceSpeed\tinterfaceLinkType\tstatus')
+            json_data=json.loads(get.text)
+            interfaceCount=len(json_data['interfaceConfigurations'])
+            for i in range(interfaceCount):
+                #print(f"\n{device.deviceType=}")
+                if 'PFOS' in device.deviceType:
+                    # Correct for bug in nG1 API
+                    json_data['interfaceConfigurations'][i]['interfaceLinkType'] = json_data['interfaceConfigurations'][i]['portSpeed']
+                elif 'Router/Switch' in device.deviceType:
+                    # Correct for bug in nG1 API
+                    json_data['interfaceConfigurations'][i]['interfaceLinkType'] = json_data['interfaceConfigurations'][i]['portSpeed']
+                interface=ng1_interface(device.deviceName, device.deviceIPAddress, json_data['interfaceConfigurations'][i]['interfaceName'],
+                json_data['interfaceConfigurations'][i]['interfaceNumber'], json_data['interfaceConfigurations'][i]['interfaceSpeed'],
+                json_data['interfaceConfigurations'][i]['interfaceLinkType'], json_data['interfaceConfigurations'][i]['status'])
+                interfaces.append(interface)
+                #print(str(i+1) + ': ' + interface.get_descriptions('\t'))
+                json_data['interfaceConfigurations'][i]['deviceName'] = device.deviceName
+                json_data['interfaceConfigurations'][i]['deviceIPAddress'] = device.deviceIPAddress
+            return True, json_data
+            # return the json object that contains the site information
+            #return get.json()
+        else:
+            logger.error(f'get interfaces nG1 API request failed.')
+            logger.error(f'Response Code: {get.status_code}. Response Body: {get.text}.')
+            return False, None
+    except Exception: # Handle other unexpected errors.
+        logger.exception(f'get interfaces nG1 API request failed')
+        logger.exception(f'URL sent is: {url}')
+        return False, None
+
+def get_domains(ng1_host, headers, cookies, logger): #ng1 cannot support json output, why?
+    get_domains_uri = "/ng1api/ncm/domains"
+    get_domains_url = ng1_host + get_domains_uri
+    try:
+        # perform the HTTPS API call
+        get = requests.request("GET", get_domains_url, verify=False, cookies=cookies)
+
+        if get.status_code == 200:
+            # success
+            logger.info('Get Domains Successfully.')
+
+            #print('No.: deviceName\tdeviceIPAddress\tstatus\tdeviceType\tactiveInterfaces\tversion')
+            #json_data=json.loads(get.text)
+            #devices_count=len(json_data['deviceConfigurations'])
+            domains=[]
+            #for i in range(devices_count):
+            #    device=ng1_device(json_data['deviceConfigurations'][i]['deviceName'], json_data['deviceConfigurations'][i]['deviceIPAddress'], json_data['deviceConfigurations'][i]['status'], json_data['deviceConfigurations'][i]['deviceType'], json_data['deviceConfigurations'][i]['activeInterfaces'], json_data['deviceConfigurations'][i]['version'])
+            #    devices.append(device)
+            #    print(str(i+1) + ': ' + device.get_descriptions('\t'))
+            return True, domains
+        else:
+            logger.error('Get domains Failed. Response Code: ' + str(get.status_code) + '. Response Body: ' + get.text + '.')
+            return False, None
+    except Exception: # Handle other unexpected errors.
+        logger.exception(f'get domains nG1 API request failed')
+        logger.exception(f'URL sent is: {url}')
+        return False
+
+def get_domain_detail(session, domainName, logger): #ng1 cannot support json output, why?
+    get_domain_uri = "/ng1api/ncm/domains/" + domainName
+    get_domain_url = ng1_host + get_domain_uri
+    # perform the HTTPS API call
+    #get = requests.request("GET", get_domain_url, headers=headers, verify=False, cookies=cookies)
+    get = requests.request("GET", get_domain_url, verify=False, cookies=cookies)
+
+    if get.status_code == 200:
+        # success
+        logger.info('Get Domain Detail Successfully.')
+        logger.info('Response Code: ' + str(get.status_code))
+        logger.info('Response Body: ' + get.text)
+        #print('No.: deviceName\tdeviceIPAddress\tstatus\tdeviceType\tactiveInterfaces\tversion')
+        #json_data=json.loads(get.text)
+        #devices_count=len(json_data['deviceConfigurations'])
+        #devices=[]
+        #for i in range(devices_count):
+        #    device=ng1_device(json_data['deviceConfigurations'][i]['deviceName'], json_data['deviceConfigurations'][i]['deviceIPAddress'], json_data['deviceConfigurations'][i]['status'], json_data['deviceConfigurations'][i]['deviceType'], json_data['deviceConfigurations'][i]['activeInterfaces'], json_data['deviceConfigurations'][i]['version'])
+        #    devices.append(device)
+        #    print(str(i+1) + ': ' + device.get_descriptions('\t'))
+        return True
+    else:
+        logger.error('Get Domain Detail Failed. Response Code: ' + str(get.status_code) + '. Response Body: ' + get.text + '.')
+        return False
+
+def post_domain(domain, ng1_host, headers, cookies, logger):
+    post_domain_uri = "/ng1api/ncm/domains/"
+    post_domain_url = ng1_host + post_domain_uri
+    # perform the HTTPS API call
+    post = requests.request("POST", post_domain_url, data=json.dumps(domain), headers=headers, verify=False, cookies=cookies)
+
+    if post.status_code == 200:
+        # success
+        logger.info('Post Domain Successfully.')
+        logger.info('Response Code: ' + str(post.status_code))
+        logger.info('Response Body: ' + post.text)
+        json_data=json.loads(post.text)
+        domainName=json_data['domainDetail'][0]['domainName']
+        domainID=json_data['domainDetail'][0]['id']
+        print('The ID of Domain [' + domainName + '] is: ' + str(domainID))
+        return True, domainID
+    else:
+        logger.error('Post Domain Failed. Response Code: ' + str(post.status_code) + '. Response Body: ' + post.text + '.')
+        return False, None
+
+def get_service(serviceName, ng1_host, headers, cookies, logger):
+    get_service_uri = "/ng1api/ncm/services/" + serviceName
+    get_service_url = ng1_host + get_service_uri
+    # perform the HTTPS API call
+    get = requests.request("GET", get_service_url, headers=headers, verify=False, cookies=cookies)
+
+    if get.status_code == 200:
+        # success
+        logger.info('Get Service Successfully.')
+        logger.info('Response Code: ' + str(get.status_code))
+        logger.info('Response Body: ' + get.text)
+        json_data=json.loads(get.text)
+        serviceType=json_data['serviceDetail'][0]['serviceType']
+        serviceID=json_data['serviceDetail'][0]['id']
+        serviceName=json_data['serviceDetail'][0]['serviceName']
+        membersCount=len(json_data['serviceDetail'][0]['serviceMembers'])
+        if serviceType == 1:
+            serviceTypeStr = 'Application'
+        elif serviceType == 6:
+            serviceTypeStr = 'Network'
+        else:
+            serviceTypeStr = 'Others'
+        print('The type of ' + serviceName + ' is ' + serviceTypeStr + '; ID = ' +  serviceID + '; It has ' + str(membersCount) + ' members.')
+        return True
+    else:
+        logger.error('Get Service Failed. Response Code: ' + str(get.status_code) + '. Response Body: ' + get.text + '.')
+        return False
+
+def post_service(service, ng1_host, headers, cookies, logger):
+
+    post_service_uri = "/ng1api/ncm/services"
+    post_service_url = ng1_host + post_service_uri
+    post = requests.request("POST", post_service_url, data=json.dumps(service), headers=headers, verify=False, cookies=cookies)
+
+    if post.status_code == 200:
+        # success
+        logger.info('Post Service Successfully.')
+        logger.info('Response Code: ' + str(post.status_code))
+        logger.info('Response Body: ' + post.text)
+        json_data=json.loads(post.text)
+        serviceName=json_data['serviceDetail'][0]['serviceName']
+        serviceID=json_data['serviceDetail'][0]['id']
+        return True, serviceName
+    else:
+        logger.error('Post Service Failed. Response Code: ' + str(post.status_code) + '. Response Body: ' + post.text + '.')
+        return False, None
+
+def post_service_into_domain(domembers, domainName, ng1_host, headers, cookies, logger):
+
+    post_domembers_uri = "/ng1api/ncm/domains/" + domainName + '/members'
+    post_domembers_url = ng1_host + post_domembers_uri
+    post = requests.request("POST", post_domembers_url, data=json.dumps(domembers), headers=headers, verify=False, cookies=cookies)
+
+    if post.status_code == 200:
+        # success
+        logger.info('Post Service into Domain Successfully.')
+        logger.info('Response Code: ' + str(post.status_code))
+        logger.info('Response Body: ' + post.text)
+        json_data=json.loads(post.text)
+        return True
+    else:
+        logger.error('Post Service into Domain Failed. Response Code: ' + str(post.status_code) + '. Response Body: ' + post.text + '.')
+        return False
+
+def demo_Add_Domain_into_Level1(session, domainName, logger):
+
+    # Add a Domain into level 1
+    ''' Sample
+    domains = {
+            "domainDetail":[
+                {
+                    "userList": "ADMINISTRATOR"
+                    "domainName": "myDomain",
+                    "id": -1,
+                    "parentID": 1
+                }
+            ]
+        }
+    '''
+    #domainName=input('domainName: ')
+    domains_dict={}
+    domain_ary=[]
+    domain_dict={}
+
+    domain_dict['userList']='ADMINISTRATOR'
+    domain_dict['domainName']=domainName
+    domain_dict['id']=-1
+    domain_dict['parentID']=1
+    domain_ary.append(domain_dict.copy())
+    domains_dict['domainDetail']=domain_ary
+
+    print('The data to be posted is : ')
+    print(domains_dict)
+
+    post_domain_status, domainID = post_domain(domains_dict, ng1_host, headers, cookies, logger)
+
+
+def demo_Add_Domain_into_Level2(session, logger):
+    # Open a session to nG1 and resuse this session for all our API calls.
+    cookies = open_session(ng1_host, ng1_username, ng1_password, headers, logger)
+    if cookies is None: # Opening the session to ng1 has failed. Exit.
+        return
+
+    # Add a Domain into level 1 and if exist, it will return the Domian ID
+    ''' Sample
+    domains = {
+            "domainDetail":[
+                {
+                    "userList": "ADMINISTRATOR"
+                    "domainName": "myDomain",
+                    "id": -1,
+                    "parentID": 1
+                }
+            ]
+        }
+    '''
+    domainNameL1=input('Level 1 - domainName: ')
+    domainNameL2=input('Level 2 - domainName: ')
+
+    domainsL1_dict={}
+    domainL1_ary=[]
+    domainL1_dict={}
+
+    domainL1_dict['userList']='ADMINISTRATOR'
+    domainL1_dict['domainName']=domainNameL1
+    domainL1_dict['id']=-1
+    domainL1_dict['parentID']=1
+    domainL1_ary.append(domainL1_dict.copy())
+    domainsL1_dict['domainDetail']=domainL1_ary
+
+    print('The data to be posted is : ')
+    print(domainsL1_dict)
+
+    post_domain_status, domainL1ID = post_domain(domainsL1_dict, ng1_host, headers, cookies, logger)
+
+    if post_domain_status == True:
+        domainsL2_dict={}
+        domainL2_ary=[]
+        domainL2_dict={}
+
+        domainL2_dict['userList']='ADMINISTRATOR'
+        domainL2_dict['domainName']=domainNameL2
+        domainL2_dict['id']=-1
+        domainL2_dict['parentID']=int(domainL1ID)
+        domainL2_ary.append(domainL2_dict.copy())
+        domainsL2_dict['domainDetail']=domainL2_ary
+
+        print('The data to be posted is : ')
+        print(domainsL2_dict)
+
+        post_domain_status, domainL2ID = post_domain(domainsL2_dict, ng1_host, headers, cookies, logger)
+
+    # Close the session to nG1.
+    close_status = close_session(ng1_host, headers, cookies, logger)
+    if close_status == False: # Closing the session to ng1 has failed. Exit.
+        return
+    else:
+        # We are done. Exit anyway.
+        return
+
+def convert_current_solarwinds_CSV_to_dataframe(config_current_csv, logger):
+    """If found in the local directory, read the solarwinds_filename into a pandas dataframe for merging later.
+    :config_current_csv: A string. The CSV filename of the current solarwinds config filename.
+    :logger: An instance of the logger object to write to in case of an error.
+    :return: If successful, return status = True, return the pandas dataframe.
+    Return status = False and None if there are any errors or exceptions.
+    """
+    now = datetime.now()
+    date_time = now.strftime("%Y_%m_%d_%H%M%S") # Used for timestamping filenames.
+    try:
+        # if config_current_csv exists read in as a pandas df, rename and cp current to archive then return the current df.
+        if os.path.isfile(config_current_csv):
+            #headers = pd.read_csv(config_current_csv, nrows=0).columns.tolist()
+            columns = ['Caption','IP_Address', 'CorpSCADA_Type', 'LOB', 'MLOB', 'Site']
+            current_df = pd.read_csv(config_current_csv, sep='\t', usecols=columns, engine='python', encoding='utf-16')
+            #current_df_mod = current_df.rename(columns={'IP_Address': 'deviceIPAddress'}, axis='columns')
+            print("\nThe type of df that current_df is:")
+            current_df.rename({'IP_Address': 'deviceIPAddress'}, axis=1, inplace=True)
+
+            print(f'\nCurrent df is: \n{current_df}')
+            logger.info(f"Conversion of CSV file: {config_current_csv} to a dataframe Successful")
+            # The current dataframe may contain new rows where the id number is blank as new config items don't have an id yet.
+            #current_df['id'] = current_df['id'].fillna(0) # Replace NaNs (empty id numbers) with zeros.
+            return True, current_df
+        else: # We did not find the config_current_csv file.
+            return True, None
+    except PermissionError as e:
+        logger.info(f'Conversion of CSV file: {config_current_csv} to a dataframe has failed')
+        logger.error (f"Permission error is:\n{e}")
+        print('Do you have the file open?')
+        return False, None
+    except Exception: # An error has occurred, log the error and return a status of False.
+        logger.exception(f'Conversion of config data to dataframe has failed')
+        return False, None
+
+def backup_current_CSV(config_current_csv, config_archive_csv, logger):
+    """If this program has run before, there will be a "current" copy of the configuration CSV File.
+    If found in the local directory, read it into a pandas dataframe for comparison later.
+    If found in the local directory, rename it to "archive" with a time-date stamp.
+    :config_current_csv: A string. The CSV filename of the current config created at the last run of this program.
+    :config_archive_csv: A string. The CSV filename of the backup we will create if a "current" csv file exists.
+    :logger: An instance of the logger object to write to in case of an error.
+    :return: If successful, return status = True, return config_current_is_found = True is the "current" CSV file is found,
+    or False if the file is not found, return the 'current' pandas dataframe holding the contents of the current CSV file.
+        Return status = False, False and None if there are any errors or exceptions.
+    """
+    now = datetime.now()
+    date_time = now.strftime("%Y_%m_%d_%H%M%S") # Used for timestamping filenames.
+    try:
+        # if config_current_csv exists read in as a pandas df, rename and cp current to archive then return the current df.
+        if os.path.isfile(config_current_csv):
+            print(f"Inside backup_current_CSV I found file {config_current_csv}")
+            #with open(config_current_csv, 'rb') as f:
+                #result = chardet.detect(f.read()) # or readline if the file is large
+
+            #headers = pd.read_csv(config_current_csv, nrows=0).columns.tolist()
+            columns = ['Caption','IP_Address', 'CorpSCADA_Type', 'LOB', 'MLOB', 'Site']
+            current_df = pd.read_csv(config_current_csv, sep='\t', usecols=columns, engine='python', encoding='utf-16')
+            #current_df = pd.read_csv(StringIO(config_current_csv), usecols=columns, sep=';',header=0, engine='python',encoding='utf-8-sig')
+            #current_df=pd.read_csv(config_current_csv, sep=";", usecols = ['Caption','IP_Address', 'CorpSCADA_Type', 'LOB', 'MLOB', 'Site'], encoding=result['encoding'])
+            #current_df = pd.read_csv(config_current_csv, encoding="ISO-8859–1")
+            print(f'\nCurrent df is: \n{current_df}')
+            #print(f'dtypes are: \n{current_df.dtypes}')
+            #if config_type == 'sites':
+                # Pandas dataframes don't have types of 'list' or 'dict', so we need to convert any of these to strings.
+                #current_df['IP_Address'] = current_df.IP_Address.astype('str') # Cast the list of ipaddress ranges into a string.
+            config_archive_csv = config_archive_csv + '_' + str(date_time) + '.csv'
+            #current_df = current_df[['id','name', 'addresses', 'speedKbps']] # reorder the columns.
+            os.rename(config_current_csv, config_archive_csv) # rename the current CSV file to a time-date stamped archive CSV file.
+            logger.info(f"Backing up file {config_current_csv} to {config_archive_csv} Successful")
+            # The current dataframe may contain new rows where the id number is blank as new config items don't have an id yet.
+            #current_df['id'] = current_df['id'].fillna(0) # Replace NaNs (empty id numbers) with zeros.
+            return True, True, current_df
+        else: # We did not find the config_current_csv file.
+            print(f"Inside backup_current_CSV I did NOT find the file {config_current_csv}")
+            return True, False, None
+    except PermissionError as e:
+        logger.info(f'Conversion of CSV file: {config_current_csv} to a dataframe has failed')
+        logger.error (f"Permission error is:\n{e}")
+        print('Do you have the file open?')
+        return False, False, None
+    except Exception: # An error has occurred, log the error and return a status of False.
+        logger.exception(f'Conversion of config data to dataframe has failed')
+        return False, False, None
 
 def write_device_interfaces_config_to_csv(devices_dict, logger):
     """Write the device and interface data to a CSV file using a json dictionary.
@@ -375,7 +792,7 @@ def write_device_interfaces_config_to_csv(devices_dict, logger):
     filename = 'nG1_get_all_interfaces_' + str(date_time) + '.csv' # Assemble the CSV filename string.
     try:
         with open(filename,'w', encoding='utf-8', newline='') as f:
-            fieldnames = ['Infinistream', 'interfaceName', 'alias', 'interfaceNumber', 'portSpeed', 'interfaceSpeed', 'status', 'alarmTemplateName', 'virtulization', 'activeInterfaces', 'inactiveInterfaces', 'interfaceLinkType', 'nBAnASMonitoring']
+            fieldnames = ['Infinistream', 'interfaceName', 'alias', 'interfaceNumber', 'interfaceSpeed', 'interfaceSpeed', 'status', 'alarmTemplateName', 'virtulization', 'activeInterfaces', 'inactiveInterfaces', 'interfaceLinkType', 'nBAnASMonitoring']
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             # Write the first row as a header that includes names for each column as specified by fieldnames above.
             writer.writeheader()
@@ -391,12 +808,11 @@ def write_device_interfaces_config_to_csv(devices_dict, logger):
             logger.info(f'[INFO] Writing Device Interfaces to CSV file: {filename} was Successful')
             return True # Success!
     except IOError as e:
-        logger.error(f'[ERROR] Unable to write Interface Locations to the CSV file: {filename}')
-        logger.error(f'[ERROR] I/O error({e.errno}):  {e.strerror}.')
+        logger.error(f'Unable to write Interface Locations to the CSV file: {filename}')
+        logger.error(f'I/O error({e.errno}):  {e.strerror}.')
         return False
-    except Exception as e: # Handle other exceptions such as attribute errors.
-        logger.error(f'[ERROR] Unable to write Interface Locations to the CSV file: {filename}')
-        logger.exception(f"Exception error is:\n{e}")
+    except Exception: # Handle other exceptions such as attribute errors.
+        logger.exception(f"Unable to write Interface Locations to the CSV file: {filename}")
         return False
 
 def convert_json_dict_to_dataframe(config_data, config_type, logger):
@@ -409,25 +825,23 @@ def convert_json_dict_to_dataframe(config_data, config_type, logger):
     """
     if config_type == 'sites':
         column_headers = ['id','name', 'addresses', 'speedKbps']
+    elif config_type == 'interfaces':
+        column_headers = ['deviceName', 'deviceIPAddress', 'interfaceName', 'interfaceNumber', 'interfaceSpeed', 'interfaceLinkType', 'status']
     elif config_type == 'client_comm':
         column_headers = ['CHANGE ME']
-    #elif config_type == 'interfaces':
-        # interate_column = 'CHANGE ME' # Use this column to determine if rows were added or removed.
-        # column_headers = ['CHANGE ME']
     elif config_type == 'apps':
         column_headers = ['CHANGE ME']
     else:
-        print('[ERROR] Unable to convert JSON config data to a dataframe')
-        logger.info(f'[ERROR] Unable to set differences, config type {config_type} is invalid')
+        logger.info(f'Unable to set differences, config type {config_type} is invalid')
         return False
     try:
         # Initialize an empty list to hold the per-interface data.
         rows = []
-        status = True # Tells the calling function if we were successful in the conversion.
         for key in config_data: # Iterate through each key in the dictionary.
             config_items_rows = config_data[key] # Pull out the list of configs from the parent key.
             for item in config_items_rows: # Iterate through each config item as they will be the rows in our dataframe.
                 rows.append(item) # Appending the config item row to the 'rows' list to produce a flat dataset.
+
         # Put the flat list of config items rows into a pandas dataframe.
         df_right_now = pd.DataFrame(rows)
         df_right_now = df_right_now[column_headers] # reorder the columns.
@@ -436,13 +850,10 @@ def convert_json_dict_to_dataframe(config_data, config_type, logger):
         if config_type == 'sites': # One of the sites columns includes lists. We cannot include lists or dicts in a dataframe.
             df_right_now['addresses'] = df_right_now.addresses.astype('str') # Cast the list of ipaddress ranges into a string.
 
-        return status, df_right_now # You can't have a whole dataframe be either True or False. So we add a status boolean.
-    except Exception as e:
-        logger.exception(f'[ERROR] Conversion of JSON config data to dataframe has failed')
-        logger.exception(f"Exception error is:\n{e}")
-        status = False
-        df_right_now = ''
-        return status, df_right_now
+        return True, df_right_now # You can't have a whole dataframe be either True or False. So we add a status boolean.
+    except Exception:
+        logger.exception(f'Conversion of JSON config data to dataframe has failed')
+        return False, None
 
 def write_dataframe_to_csv(df, csv_filename, logger):
     """Write the device and interface dataframe to a CSV file.
@@ -454,9 +865,8 @@ def write_dataframe_to_csv(df, csv_filename, logger):
     try:
         df.to_csv(csv_filename, header=True, encoding='utf-8', index=False) # Write the dataframe to the CSV file.
     except PermissionError as e:
-        logger.error(f'[ERROR] Permission Error: Write dataframe to CSV file: {csv_filename}')
-        logger.error(f'[ERROR] Permission Error({e.errno}):  {e.strerror}.')
-        print(f'[ERROR] Conversion of CSV file: {csv_filename} to a dataframe has failed')
+        logger.error(f'Permission Error: Write dataframe to CSV file: {csv_filename}')
+        logger.error(f'Permission Error({e.errno}):  {e.strerror}.')
         print('Do you have the file open?')
         status = False
         config_current_is_found = False
@@ -466,378 +876,64 @@ def write_dataframe_to_csv(df, csv_filename, logger):
         print(f'\n[ERROR] I/O error: Write dataframe to CSV file: {csv_filename}')
         logger.error(f'[ERROR] I/O Error: Write dataframe to CSV file: {csv_filename}')
         logger.error(f'[ERROR] I/O Error({e.errno}):  {e.strerror}.')
-    except Exception as e:
-        logger.exception(f'[ERROR] Write dataframe to CSV file: {csv_filename} has failed"')
-        logger.exception(f'[ERROR] Exception error is:\n{e}')
+    except Exception:
+        logger.exception(f'Write dataframe to CSV file: {csv_filename} has failed"')
         return False
 
     return True
 
-def backup_current_CSV(config_current_csv, config_archive_csv, config_type, logger):
-    """If this program has run before, there will be a "current" copy of the configuration CSV File.
-    If found in the local directory, read it into a pandas dataframe for comparison later.
-    If found in the local directory, rename it to "archive" with a time-date stamp.
-    :config_current_csv: A string. The CSV filename of the current config created at the last run of this program.
-    :config_archive_csv: A string. The CSV filename of the backup we will create if a "current" csv file exists.
-    :config_type: The type of config data to get (sites, client_comm, interfaces, apps)
+def find_intersection_solarwinds_to_current_device_interfaces(solarwinds_current_df, right_now_df, logger):
+    """Based on IP address, find the intersection of solarwinds WAN interfaces and nG1 MIB II device interfaces.
+    :solarwinds_current_df: The dataframe of the current configuration in solarwinds.
+    :right_now_df: The datafram of the current nG1 device interface configuration.
     :logger: An instance of the logger object to write to in case of an error.
-    :return: If successful, return status = True and the current pandas dataframe.
-    Return config_current_is_found = True is the "current" CSV file is found, or False if the file is not found.
-    Return status = False and an empty pandas dataframe if there are any errors or exceptions.
+    :return: If successful, return status = True and the dataframe intersection where IP addresses match.
+    Return status = False and None if there are any errors or exceptions.
     """
-    now = datetime.now()
-    date_time = now.strftime("%Y_%m_%d_%H%M%S") # Used for timestamping filenames.
     try:
-        # if config_current_csv exists read in as a pandas df, rename and cp current to archive then return the current df.
-        if os.path.isfile(config_current_csv):
-            current_df = pd.read_csv(config_current_csv)
-            #print(f'\nCurrent df is: \n{current_df}')
-            #print(f'dtypes are: \n{current_df.dtypes}')
-            if config_type == 'sites':
-                # Pandas dataframes don't have types of 'list' or 'dict', so we need to convert any of these to strings.
-                current_df['addresses'] = current_df.addresses.astype('str') # Cast the list of ipaddress ranges into a string.
-            config_archive_csv = config_archive_csv + '_' + str(date_time) + '.csv'
-            current_df = current_df[['id','name', 'addresses', 'speedKbps']] # reorder the columns.
-            os.rename(config_current_csv, config_archive_csv) # rename the current CSV file to a time-date stamped archive CSV file.
-            print(f"[INFO] Backing up file {config_current_csv} to {config_archive_csv} Successful")
-            logger.info(f"[INFO] Backing up file {config_current_csv} to {config_archive_csv} Successful")
-            config_current_is_found = True
-            status = True
-            # The current dataframe may contain new rows where the id number is blank as new config items don't have an id yet.
-            current_df['id'] = current_df['id'].fillna(0) # Replace NaNs (empty id numbers) with zeros.
-            return status, config_current_is_found, current_df
-        else: # We did not find the config_current_csv file. We will create one based on what is set in nG1 currently.
-            config_current_is_found = False
-            status = True # This is not an error, return True. It is not required that this file exists.
-            current_df = ''
-            return status, config_current_is_found, current_df
-    except PermissionError as e:
-        logger.error(f'[ERROR] Conversion of CSV file: {config_current_csv} to a dataframe has failed')
-        logger.error (f"[ERROR] Permission error is:\n{e}")
-        print(f'[ERROR] Conversion of CSV file: {config_current_csv} to a dataframe has failed')
-        print('Do you have the file open?')
-        status = False
-        config_current_is_found = False
-        current_df = ''
-        return status, config_current_is_found, current_df
-    except Exception as e: # An error has occurred, log the error and return a status of False.
-        logger.exception(f'[ERROR] Conversion of config data to dataframe has failed')
-        logger.exception(f"[ERROR] Exception error is:\n{e}")
-        status = False
-        config_current_is_found = False
-        current_df = ''
-        return status, config_current_is_found, current_df
+        intersection_df = pd.merge(solarwinds_current_df, right_now_df, how ='inner', on =['deviceIPAddress'])
+        #intersection_df = solarwinds_current_df.merge(right_now_df, on=['deviceIPAddress']) # Compare the "current" dfright data to the "right now" dfleft data.
+        print("\nintersection_df is:")
+        print(intersection_df)
+        return True, intersection_df
+    except Exception:
+        logger.exception(f'find_intersection_solarwinds_to_current_device_interfaces has failed"')
+        return False, None
 
-def modifiedRows(dfLeft, dfRight, config_type, logger):
-    """This function takes in two pandas dataframes and determines if there are any config items
-     that have been modified since the last time this program was run. A new dataframe (dfModifiedRows)
-      is created that includes all rows for all possible cases; NoChange, *Added, *Deleted or *Modified.
-      A new column (_Change) is appended to the dataframe to indicate the type of change that occurred.
-    :dfLeft: A pandas dataframe. The 'current' set of config data from the previous program execution.
-    :dfRight: A pandas dataframe. The 'right now' set of config data from the nG1 API call we just made.
-    :config_type: The type of config data to get (sites, client_comm, interfaces, apps)
-    :logger: An instance of the logger object to write to in case of an error.
-    :return: If successful, return status = True and the dfModifiedRows pandas dataframe.
-    Return status = False and an empty pandas dataframe if there are any errors or exceptions.
-    """
-    if config_type == 'sites':
-        column_headers = ['id','name', 'addresses', 'speedKbps', '_Change']
-    elif config_type == 'client_comm':
-        column_headers = ['CHANGE ME']
-    #elif config_type == 'interfaces':
-        # interate_column = 'CHANGE ME' # Use this column to determine if rows were added or removed.
-        # column_headers = ['CHANGE ME']
-    elif config_type == 'apps':
-        column_headers = ['CHANGE ME']
-    else:
-        print(f'[ERROR] Unable to set differences, config type {config_type} is invalid')
-        logger.info(f'[ERROR] Unable to set differences, config type {config_type} is invalid')
-        return False
-    try:
-        dfMerged = dfLeft.merge(dfRight, indicator=True, how='outer') # Compare the "current" dfright data to the "right now" dfleft data.
-        print(f'dfMerged is: \n{dfMerged}')
-        # Convert '_merge' indicator column into a situation specific descriptive column:
-        # left_only / right_only indicates a change to a config setting if the id and name values match.
-        # - Keep the left value.
-        # both, indicates no change to this config setting since last time the program was ran.
-        # left_only (no matching id, name) indicates a config setting was deleted.
-        # right_only (no matching user id) indicates a config setting was added.
-        grp_cols = ['name'] # Use these column to determine if any of the other columns are different.
-        step1DF = dfMerged.groupby(grp_cols).filter(lambda x: x.id.count() > 1)[dfMerged.groupby(grp_cols).filter(lambda x: x.id.count() > 1)['_merge'] == 'left_only']
-        step1DF['_merge'].astype('object') # convert from categorical back to object
-        step1DF['_merge'] = '*Mod_Orig' # The value to use in the _merge column for the modified row (config setting) as it was in the "current CSV".
-        step2DF = dfMerged.groupby(grp_cols).filter(lambda x: x.id.count() > 1)[dfMerged.groupby(grp_cols).filter(lambda x: x.id.count() > 1)['_merge'] == 'right_only']
-        step2DF['_merge'].astype('object') # convert from categorical dtype back to object.
-        step2DF['_merge'] = '*Mod_New' # The value to use in the _merge column for the modified row (config setting) as it is in the "right now" CSV.
-        dfChanges_orig_new = pd.concat([step1DF, step2DF])
-        print(f'dfChanges_orig_new is \n{dfChanges_orig_new}')
-        describers = {'_merge':{'both': 'No_Change', 'left_only':'*Deleted', 'right_only':'*Added'}} # The list of values we want to use in the _merge column.
-        step3DF = dfMerged.groupby(grp_cols).filter(lambda x: x.id.count() == 1).replace(describers) # Replace the values in the _merge column.
-        print(f'step3DF is \n{step3DF}')
-        dfModifiedRows = pd.concat([dfChanges_orig_new, step3DF]) # Put the changes dataframe together with the added-deleted-nochange dataframe.
-        dfModifiedRows.rename(columns={'_merge': '_Change'}, inplace=True) # Change the column name to '_Change' for readability.
-        dfModifiedRows.sort_index(inplace=True) # Sort the dataframe so that differences appear at the bottom.
-        dfModifiedRows = dfModifiedRows[['id','name', 'addresses', 'speedKbps', '_Change']] # Not sure if I need this rename columns step???
-        print(f"\ndfModifiedRows after sort and rename index is: \n{dfModifiedRows}")
-        status = True
-        return status, dfModifiedRows
-    except Exception as e: # An error has occurred, log the error and return a status of False.
-        logger.exception(f'[ERROR] The check for modified config items has failed')
-        logger.exception(f"[ERROR] Exception error is:\n{e}")
-        status = False
-        dfModifiedRows = ''
-        return status, dfModifiedRows
 
-def get_config_data_differences(current_df, right_now_df, config_type, logger):
-    """This function takes in two pandas dataframes and determines if there are any config items
-     that have been added, removed (deleted) or modified since the last time this program was run.
-    :dfLeft: A pandas dataframe. The 'current' set of config data from the previous program execution.
-    :dfRight: A pandas dataframe. The 'right now' set of config data from the nG1 API call we just made.
-    :config_type: The type of config data to get (sites, client_comm, interfaces, apps)
-    :logger: An instance of the logger object to write to in case of an error.
-    :return: If successful, return status = True and the diff_df pandas dataframe.
-    Return status = False and an empty pandas dataframe if there are any errors or exceptions.
-    """
-    diff_df = ''
-    try:
-        status, dfModifiedRows = modifiedRows(right_now_df, current_df, config_type, logger)
-        if status == False: # Determining the modified config items has failed.
-            did_anything_change = False
-            diff_df = ''
-            return status, did_anything_change, diff_df
-        did_anything_change = dfModifiedRows._Change.isin(['*Mod_Orig', '*Mod_new', '*Added', '*Deleted']).any().any()
-        if did_anything_change == False:
-            print(f'[INFO] No differences found between the {config_type} current CSV and what is configured in nG1 ')
-            logger.info(f'[INFO] No differences found between the {config_type} current CSV and what is configured in nG1')
-            diff_df = ''
-            status = True
-            return status, did_anything_change, diff_df # Success. Return the status as True (no errors) and an empty diff_df dataframe.
-        else:
-            print(f'[INFO] Differences have been found between the {config_type} current CSV and what is configured in nG1')
-            print(f'[INFO] Please review the {config_type}_change_log CSV file')
-            logger.info(f'[INFO] Differences have been found between the {config_type} current CSV and what is configured in nG1')
-            diff_df = dfModifiedRows
-            status = True
-            return status, did_anything_change, diff_df # Success. Return the status as True (no errors) and an empty diff_df dataframe.
-    except Exception as e: # An error has occurred, log the error and return a status of False.
-        logger.exception(f'[ERROR] The check for config differences between the current CSV file and what is configured in nG1 has failed')
-        logger.exception(f"[ERROR] Exception error is:\n{e}")
-        status = False
-        did_anything_change = False
-        diff_df = ''
-        return status, did_anything_change, diff_df
 
-def set_config_differences(session, diff_df, config_type, logger):
-    """Use the nG1 API to set the configuration in the system for the config_type passed in.
-    The goal is to make the nG1 configuration match what is contained in the "current" CSV file.
-    This way the "current" CSV file can be modified by the user and this program can keep the
-     configuration on nG1 in sync with what gets written to the "current" CSV file.
-    :session: An instance of the ApiSession class that holds all our API session params.
-    :diff_df: The pandas dataframe that holds the notation of differences found between the "current"
-     CSV file and what is in the nG1 configuration "right now".
-    :config_type: The type of config data to get (sites, client_comm, interfaces, apps)
-    :logger: An instance of the logger object to write to in case of an error.
-    :return: If successful, return the sites info in JSON format.
-    Return False if there are any errors or exceptions.
-    """
-    # Depending on which config argument supplied, the nG1 API url will be different.
-    if config_type == 'sites':
-        uri = "/ng1api/ncm/sites/"
-    elif config_type == 'client_comm':
-        uri = "/ng1api/ncm/clientcommunities/"
-    #if config_type == 'interfaces':
-        #uri = "/ng1api/ncm/sites/" #NOTE: Put the mastercard functions in this program.
-    elif config_type == 'apps':
-        uri = "/ng1api/ncm/applications/"
-    else:
-        print(f'[ERROR] Unable to set differences, config type {config_type} is invalid')
-        logger.info(f'[ERROR] Unable to set differences, config type {config_type} is invalid')
-        return False
-    url = session.ng1_host + uri
-
-    dfAdded = diff_df.loc[diff_df['_Change'] == '*Added'] # Find the added rows (config items that were added).
-    # print(f'dfAdded that should be empty is: \n{dfAdded}')
-    if len(dfAdded.index) != 0: # We found added config items
-        dfAdded = dfAdded.iloc[:,:-1] # Filter out the last column "_Changed", but include all rows and all other columns.
-        dfAdded = dfAdded.iloc[:,1:] # Filter out the first column "id" as new config items don't have an id yet.
-        if config_type == 'sites': # Set operations vary depending on what type of configuration was specified in the launch argument.
-            config_data = {"sites": []} # Initialize an empty dictionary to hold site configs.
-            dfAdded['associateAll']='true' # Hardcoding that all sites should be associated to all interfaces (MEs).
-            config_items = dfAdded.to_dict('records') # Convert the dataframe for added configs to a python dictionay.
-            i = 0
-            for config_item in config_items: # Loop through the added config items and add them to the sites dictionary.
-                #print(f'config_item is: \n{config_item}')
-                addr_list = config_items[i]['addresses'] # There may be several added sites, so we need an index in our loop.
-                addr_list = ast.literal_eval(addr_list) # We have to convert a string of addresses to a list of addresses.
-                config_item['addresses'] = addr_list # Add the address list to the dictionary
-                config_item['associateAll'] = True # Hardcoding that all sites should be associated to all interfaces (MEs).
-                #print(f'config_item is: \n{config_item}')
-                config_data["sites"].append(config_item) # This site config item is ready to be added to the dictionary.
-                i += 1
-            #print(f'config_data is: {config_data}')
-        set_type = 'add'
-        # Pass the dictionary to the function that actually configures items.
-        status = set_config_items(session, config_type, config_data, set_type, logger)
-        if status == False: # Adding configuration items has failed.
-            print(f'[ERROR] Unable to add {config_type} config items to the nG1 API')
-            logger.error(f'[ERROR] Unable to add {config_type} config items to the nG1 API')
-            return False
-    dfDeleted = diff_df.loc[diff_df['_Change'] == '*Deleted'] # Find the deleted rows (config items that were removed).
-    if len(dfDeleted.index) != 0: # We found deleted config items
-        dfDeleted = dfDeleted[['id']] # Filter out all columns except the id column (we only need ids to delete).
-        dfDeleted.reset_index() # reset the dataframe index.
-        print(f'\ndfDeleted is: \n{dfDeleted}')
-        if config_type == 'sites':
-            config_data = {"sites": []}
-            config_items = dfDeleted.to_dict('records')
-            i = 0
-            for config_item in config_items: # Loop through the deleted config items and add them to the sites dictionary.
-                #print(f'config_item is: \n{config_item}')
-                config_data["sites"].append(config_item) # This site config item is ready to be added to the dictionary.
-                i += 1
-            print(f'config_data is: {config_data}')
-        set_type = 'delete'
-        status = set_config_items(session, config_type, config_data, set_type, logger)
-        if status == False: # Deleting configuration items has failed.
-            print(f'[ERROR] Unable to delete {config_type} config items to the nG1 API')
-            logger.error(f'[ERROR] [ERROR] Unable to delete {config_type} config items to the nG1 API')
-            return False
-    #except Exception as e: # Handle other unexpected errors.
-        #logger.exception(f'[ERROR] get {config_type} nG1 API request failed')
-        #logger.exception(f'[ERROR] URL sent is: {url}')
-        #logger.exception(f"[ERROR] Exception error is:\n{e}")
-        #return False
-
-    return True
-
-def get_ng1_config(session, config_type, logger):
-    """Use the nG1 API to get the configuration in the system for the config_type passed in.
-    :config_type: The type of config data to get (sites, client_comm, interfaces, apps)
-    :session: An instance of the ApiSession class that holds all our API session params.
-    :logger: An instance of the logger class to write to in case of an error.
-    :return: If successful, return the sites info in JSON format.
-    Return False if there are any errors or exceptions.
-    """
-    if config_type == 'sites':
-        uri = "/ng1api/ncm/sites/"
-    if config_type == 'client_comm':
-        uri = "/ng1api/ncm/clientcommunities/"
-    #if config_type == 'interfaces':
-        #uri = "/ng1api/ncm/sites/" #NOTE: Put the mastercard functions in this program.
-    if config_type == 'apps':
-        uri = "/ng1api/ncm/applications/"
-    url = session.ng1_host + uri
-    try:
-        # perform the HTTPS API call to get the sites information
-        get = requests.get(url, headers=session.headers, verify=False, cookies=session.cookies)
-
-        if get.status_code == 200:
-            # success
-            print(f'[INFO] get {config_type} nG1 API request Successful')
-            logger.info(f'[INFO] get {config_type} nG1 API request Successful')
-            # return the json object that contains the site information
-            return get.json()
-        else:
-            logger.error(f'[ERROR] get {config_type} nG1 API request failed. Response Code: {get.status_code}. Response Body: {get.text}.')
-            return False
-    except Exception as e: # Handle other unexpected errors.
-        logger.exception(f'[ERROR] get {config_type} nG1 API request failed')
-        logger.exception(f'[ERROR] URL sent is: {url}')
-        logger.exception(f"[ERROR] Exception error is:\n{e}")
-        return False
-
-def set_config_items(session, config_type, config_data, set_type, logger):
-    """Use the nG1 API to add, delete or modify new configuration items in the system for the config_type and config_data passed in.
-    :session: An instance of the ApiSession class that holds all our API session params.
-    :config_type: The type of config data to get (sites, client_comm, interfaces, apps)
-    :config_data: The configuration data dictionary that hold the config items we need to add.
-    :set_type: The type of config operation to perform; add, delete, modify.
-    :logger: An instance of the logger class to write to in case of an error.
-    :return: If successful, return True.
-    Return False if there are any errors or exceptions.
-    """
-    if config_type == 'sites':
-        uri = "/ng1api/ncm/sites/"
-    if config_type == 'client_comm':
-        uri = "/ng1api/ncm/clientcommunities/"
-    #if config_type == 'interfaces':
-        #uri = "/ng1api/ncm/sites/" #NOTE: Put the mastercard functions in this program.
-    if config_type == 'apps':
-        uri = "/ng1api/ncm/applications/"
-    url = session.ng1_host + uri
-    try:
-        # use json.dumps to provide a serialized json object (a string actually)
-        # this json_string will become our new configuration as defined by what is in the config_data dictionary.
-        json_string = json.dumps(config_data)
-        #print(f'New {config_type} json_string is: {json_string}')
-
-        # perform the nG1 API Post call with the serialized json object from config_data
-        if set_type == 'add':
-            # this will create the new site(s), client communities, interfaces, apps, etc. in nG1 for this config_data.
-            post = requests.post(url, headers=session.headers, data=json_string, verify=False, cookies=session.cookies)
-
-            if post.status_code == 200: # The create config items nG1 API call succeded.
-                print(f'[INFO] The add {config_type} via nG1 API operation was Successful')
-                logger.info(f'[INFO] The add {config_type} via nG1 API operation was Successful')
-                return True
-            else:
-                print(f'[ERROR] The add {config_type} via nG1 API operation has failed')
-                logger.error(f'[ERROR] The add {config_type} via nG1 API operation has failed. Response Code: {post.status_code}. Response Body: {post.text}.')
-                return False
-        elif set_type == 'delete':
-            # this will remove the delted site(s), client communities, interfaces, apps, etc. in nG1 for this config_data.
-            delete = requests.delete(url, headers=session.headers, data=json_string, verify=False, cookies=session.cookies)
-
-            if delete.status_code == 200: # The create config items nG1 API call succeded.
-                print(f'[INFO] The delete {config_type} via nG1 API operation was Successful')
-                logger.info(f'[INFO] The delete {config_type} via nG1 API operation was Successful')
-                return True
-            else:
-                print(f'[ERROR] The delete {config_type} via nG1 API operation has failed')
-                logger.error(f'[ERROR] The deleted {config_type} via nG1 API operation has failed. Response Code: {delete.status_code}. Response Body: {delete.text}.')
-                return False
-        elif set_type == 'modify':
-            # this will update the modified site(s), client communities, interfaces, apps, etc. in nG1 for this config_data.
-            put = requests.put(url, headers=session.headers, data=json_string, verify=False, cookies=session.cookies)
-
-            if put.status_code == 200: # The create config items nG1 API call succeded.
-                print(f'[INFO] The modify {config_type} via nG1 API operation was Successful')
-                logger.info(f'[INFO] The modify {config_type} via nG1 API operation was Successful')
-                return True
-            else:
-                print(f'[ERROR] The modify {config_type} via nG1 API operation has failed')
-                logger.error(f'[ERROR] The modify {config_type} via nG1 API operation has failed. Response Code: {put.status_code}. Response Body: {put.text}.')
-                return False
-        else:
-            return False # I did not get any valid set_type.
-    except Exception as e: # An error has occurred, log the error and return a status of False.
-        logger.exception(f'[ERROR] The add {config_type} via nG1 API operation has failed')
-        logger.exception(f"[ERROR] Exception error is:\n{e}")
-        return False
 
 # -----------------------------------------------------------------------------------------------------------------
 def main():
-    prog_version = '0.1'
+    prog_version = '0.0'
+    now = datetime.now()
+    date_time = now.strftime("%Y_%m_%d_%H%M%S") # Used for timestamping filenames.
+
+
     # Create a logger instance and write the starting date_time to a log file.
-    logger, log_filename = create_logging_function(config_type)
+    log_filename = 'TC_devices_sync_' + date_time + '.log' #The name of the log file we will write to.
+    logger = create_logging_function(log_filename)
     if logger == False: # Creating the logger instance has failed. Exit.
         print("\n[CRITICAL] Main, Creating the logger instance has failed")
         print('Exiting...')
-        sys.exit()
+        sys.exit(1)
 
-    status, is_set_config_true, config_type = flags_and_arguments(prog_version, logger)
-    if status == False: # Parsing the user entered flags or arguments has failed Exit.
-        print("\n[CRITICAL] Main, Parsing the user entered flags or arguments has failed")
+    status, is_set_config_true = flags_and_arguments(prog_version, logger)
+    if status == False: # Parsing the run command flags or arguments has failed Exit.
+        logger.info("\nMain, Parsing the run command flags has failed")
         print('Exiting...')
-        sys.exit()
+        sys.exit(1)
 
-    # Hardcoding the name of the "current" CSV file that holds the config data from the last run.
-    config_current_csv = config_type + '_config_current.csv' # This file will get overwritten by design if the same config_type is run again.
-    # Hardcoding the name of the "archive" CSV file that we will use to backup the "current" CSV file.
-    config_archive_csv = config_type + '_config_archive' # No extention as we will append a time-date + .csv to the name.
+    # Hardcoding the name of the nG1 device interfaces "current" CSV file that holds the config data queried from the nG1 API.
+    device_interfaces_config_current_filename = 'device_interfaces_config_current.csv' # This file will get overwritten by design if the same config_type is run again.
+    # Hardcoding the name of the "current" CSV file that holds the config data exported from Solarwinds.
+    solarwinds_filename = 'solarwinds_config_current.csv' # This file will get overwritten by design if the same config_type is run again.
+    # Hardcoding the name of the CSV file that holds the intersection of MIB II device interface configurations as matched by IP address.
+    solarwinds_archive_filename = 'solarwinds_config_archive' # No extention as we will append a time-date + .csv to the name.
+    # Hardcoding the name of the "archive" CSV file that we will use to backup the "current" Solarwinds CSV file.
+    device_interfaces_intersection_filename = 'device_interfaces_intersection.csv'
     # Hardcoding the name of the "change_log" CSV file that we will use to output and differences seen since last program execution.
-    change_log_csv = config_type + '_change_log.csv' # This file will get overwritten by design if the same config_type is run again.
-
+    solarwinds_change_log_csv = 'solarwinds_change_log.csv' # This file will get overwritten by design.
     # Hardcoding the filenames for encrypted credentials and the key file needed to decrypt the credentials.
     cred_filename = 'CredFile.ini'
     os_type = sys.platform
@@ -849,123 +945,122 @@ def main():
     # Get the user's credentials from a file and decrypt them.
     creds = get_decrypted_credentials(cred_filename, ng1key_file, logger)
     if creds == False: # Creating the creds instance has failed. Exit.
-        logger.critical(f"[CRITICAL] Main, Getting the login credentials from file: {cred_filename} failed")
-        print(f"\n[CRITICAL] Main, Getting the ng1 login credentials from file: {cred_filename} failed")
+        logger.critical(f"Main, Getting the nG1 login credentials from file: {cred_filename} failed")
+        logger.info(f"\nMain, Getting the ng1 login credentials from file: {cred_filename} failed")
         print(f'Check the log file: {log_filename}. Exiting...')
-        sys.exit()
+        sys.exit(1)
 
     # Based on what is in the creds, determine all the parameters needed to make an nG1 API connection.
     status, session = determine_ng1_api_params(creds, logger)
     if status == False: # Determining the nG1 API parameters has failed. Exit.
-        logger.critical(f"[CRITICAL] Main, determining the nG1 API parameters has failed")
-        print(f"\n[CRITICAL] Main, determining the nG1 API parameters has failed")
+        logger.critical(f"Main, determining the nG1 API parameters has failed")
+        logger.info(f"\nMain, determining the nG1 API parameters has failed")
         print(f'Check the log file: {log_filename}. Exiting...')
-        sys.exit()
+        sys.exit(1)
 
     # Open an API session to nG1 and keep it open for all subsequent calls.
     status = open_session(session, logger)
     if status == False: # Opening the HTTP-HTTPS nG1 API session has failed. Exit.
-        logger.critical(f"[CRITICAL] Main, opening the HTTP-HTTPS nG1 API session has failed")
-        print(f"\n[CRITICAL] Main, opening the HTTP-HTTPS nG1 API session has failed")
+        logger.critical(f"Main, opening the HTTP-HTTPS nG1 API session has failed")
+        logger.info(f"\nMain, opening the HTTP-HTTPS nG1 API session has failed")
         print(f'Check the log file: {log_filename}. Exiting...')
-        sys.exit()
+        sys.exit(1)
+
+    # List all the devices
+    status, devices_array = get_devices(session, logger)
+    if status == False: # get_devices has failed. Exit.
+        logger.critical(f"Main, get_devices has failed")
+        logger.info(f"\nMain, get_devices has failed")
+        print(f'Check the log file: {log_filename}. Exiting...')
+        sys.exit(1)
+    else:
+        interface_df_list = []
+        for device in devices_array:
+            if device.status == 'Active' and device.deviceType == 'Router/Switch':
+                status, current_interfaces_data = get_interfaces(device, session, logger)
+                if status == False: # get_interfaces has failed. Exit.
+                    logger.critical(f"Main, get_interfaces has failed")
+                    logger.info(f"\nMain, get_interfaces has failed")
+                    print(f'Check the log file: {log_filename}. Exiting...')
+                    sys.exit(1)
+                else:
+                    # Convert the json nested dictionary to a flatend dataframe in pandas.
+                    config_type = 'interfaces'
+                    status, interface_df = convert_json_dict_to_dataframe(current_interfaces_data, config_type, logger)
+                    interface_df_list.append(interface_df)
+                    #print(f"right_now_df = \n{right_now_df}\n")
+                    if status == False: # The conversion has failed. Exit.
+                        logger.critical(f"Main, dataframe conversion has failed")
+                        logger.info(f"\nMain, dataframe conversion has failed")
+                        print(f'Check the log file: {log_filename}. Exiting...')
+                        sys.exit(1)
+        for interface_df in interface_df_list:
+            print(f"\n{interface_df}")
+        right_now_df = pd.concat(interface_df_list, ignore_index=True)
+        print(f"\n{right_now_df}")
+
+
+    # List all the domains
+    #status, list_domains_ary = get_domains(ng1_host, headers, cookies, logger)
+
+    # Get detail on a specific Domain
+    #status = get_domain_detail(session, domainName, logger)
+
+    #status = demo_Add_Domain_into_Level1(session, domainName, logger)
+
+    #status = demo_Add_Domain_into_Level2(session, logger)
+
+    #status = demo_Get_Service(session, logger)
+
 
     # Backup the current configuration CSV created the last time this program ran (rename it if it exists).
-    status, config_current_is_found, current_df = backup_current_CSV(config_current_csv, config_archive_csv, config_type, logger)
-    if status == False: # Backing up the current CSV config file has failed.
-        logger.critical(f"[CRITICAL] Main, backup_current_csv has failed")
-        print(f"\n[CRITICAL] Main, backup_current_csv has failed")
+    #status, config_current_is_found, current_df = backup_current_CSV(solarwinds_filename, solarwinds_archive_filename, logger)
+    #if status == False: # Backing up the current CSV config file has failed.
+        #logger.critical(f"Main, backup_current_csv has failed")
+        #logger.info(f"\nMain, backup_current_csv has failed")
+        #print(f'Check the log file: {log_filename}. Exiting...')
+        #sys.exit(1)
+
+    status = write_dataframe_to_csv(right_now_df, device_interfaces_config_current_filename, logger)
+    if status == False: # The write dataframe to CSV file operation has failed. Exit.
+        logger.critical(f"Main, write_dataframe_to_csv to CSV file: {device_interfaces_config_current_filename} has failed")
+        logger.info(f"\nMain, writing the dataframe to CSV file: {device_interfaces_config_current_filename} has failed")
         print(f'Check the log file: {log_filename}. Exiting...')
-        sys.exit()
+        sys.exit(1)
 
-    # Get config info from the nG1 API. Returned as a python object (a json formatted dictionary).
-    config_data = get_ng1_config(session, config_type, logger)
-    if config_data == False: # Getting the config data from the nG1 API has failed. Exit.
-        logger.critical(f"[CRITICAL] Main, getting the {config_type} data from the nG1 API has failed")
-        print(f"\n[CRITICAL] Main, getting the {config_type} data from the nG1 API has failed")
+    #if config_current_is_found:
+        #print(f"I found the {solarwinds_filename} file!!")
+    status, solarwinds_current_df = convert_current_solarwinds_CSV_to_dataframe(solarwinds_filename, logger)
+    if status == False: # Conversion of current solarwinds CSV to a pandas dataframe has failed.
+        logger.critical(f"Main, convert_current_solarwinds_CSV_to_dataframe has failed")
+        logger.info(f"\nMain, convert_current_solarwinds_CSV_to_dataframe has failed")
         print(f'Check the log file: {log_filename}. Exiting...')
-        sys.exit()
+        sys.exit(1)
 
-    # Convert the json nested dictionary to a flatend dataframe in pandas.
-    status, right_now_df = convert_json_dict_to_dataframe(config_data, config_type, logger)
-    if status == False: # The conversion has failed. Exit.
-        logger.critical(f"[CRITICAL] Main, dataframe conversion has failed")
-        print(f"\n[CRITICAL] Main, dataframe conversion has failed")
+    status, intersection_df = find_intersection_solarwinds_to_current_device_interfaces(solarwinds_current_df, right_now_df, logger)
+    if status == False: # The write dataframe to CSV file operation has failed. Exit.
+        logger.critical(f"Main, find_intersection_solarwinds_to_current_device_interfaces has failed")
+        logger.info(f"\nMain, find_intersection_solarwinds_to_current_device_interfaces has failed")
         print(f'Check the log file: {log_filename}. Exiting...')
-        sys.exit()
+        sys.exit(1)
 
-    if config_current_is_found is True: # A 'current' CSV was found. Compare the desired current config to what is set in the nG1 configuration.
-        status, did_anything_change, diff_df = get_config_data_differences(current_df, right_now_df, config_type, logger)
-        if status == False: # The get config data differences has failed.
-            logger.critical(f"[CRITICAL] Main, get_config_data_differences has failed")
-            print(f"\n[CRITICAL] Main, get_config_data_differences has failed")
-            print(f'Check the log file: {log_filename}. Exiting...')
-            sys.exit()
-
-        if did_anything_change == True: # Changes have been found in the config settings since last program execution.
-            # Write the "diff_df" pandas dataframe to a CSV file to capture the differences between the desired current CSV and the nG1 right now config.
-            status = write_dataframe_to_csv(diff_df, change_log_csv, logger)
-            if status == False: # The write dataframe to CSV file operation has failed. Exit.
-                logger.critical(f"[CRITICAL] Main, write_dataframe_to_csv to CSV filename: {change_log_csv} has failed")
-                print(f"\n[CRITICAL] Main, writing the differences dataframe to CSV file: {change_log_csv} has failed")
-                print(f'Check the log file: {log_filename}. Exiting...')
-                sys.exit()
-            if is_set_config_true == True: #The user wants any differences found to be set via nG1 API
-                status = set_config_differences(session, diff_df, config_type, logger)
-                if status == False: # The write config differences to nG1 API has failed. Exit.
-                    logger.critical(f"[CRITICAL] Main, set_config_differences has failed")
-                    print(f"\n[CRITICAL] Main, set_config_differences has failed")
-                    print(f'Check the log file: {log_filename}. Exiting...')
-                    sys.exit()
-                # Get config info from the nG1 API. We need to capture those new id numbers for any added config items.
-                config_data = get_ng1_config(session, config_type, logger)
-                if config_data == False: # Getting the config data from the nG1 API has failed. Exit.
-                    logger.critical(f"[CRITICAL] Main, after the set operation, getting the {config_type} data from the nG1 API has failed")
-                    print(f"\n[CRITICAL] Main, after the set operation, getting the {config_type} data from the nG1 API has failed")
-                    print(f'Check the log file: {log_filename}. Exiting...')
-                    sys.exit()
-                # Convert the json nested dictionary to a flatend dataframe in pandas.
-                status, right_now_df = convert_json_dict_to_dataframe(config_data, config_type, logger)
-                if status == False: # The conversion has failed. Exit.
-                    logger.critical(f"[CRITICAL] Main, dataframe conversion has failed")
-                    print(f"\n[CRITICAL] Main, dataframe conversion has failed")
-                    print(f'Check the log file: {log_filename}. Exiting...')
-                    sys.exit()
-                # Any added config items will have id numbers now. Write the updated config to the current config CSV file.
-                status = write_dataframe_to_csv(right_now_df, config_current_csv, logger)
-                if status == False: # The write config differences to nG1 API has failed. Exit.
-                    logger.critical(f"[CRITICAL] Main, after the set operation, updating the current CSV file has failed")
-                    print(f"\n[CRITICAL] Main, after the set operation, updating the current CSV file has failed")
-                    print(f'Check the log file: {log_filename}. Exiting...')
-                    sys.exit()
-        else: # Nothing changed. Create a new current CSV based on what is configured in the nG1 right now.
-            # This gives the user a template to modify in Excel.
-            status = write_dataframe_to_csv(right_now_df, config_current_csv, logger)
-            if status == False: # The write dataframe to CSV file operation has failed. Exit.
-                logger.critical(f"[CRITICAL] Main, write_dataframe_to_csv to CSV file: {config_current_csv} has failed")
-                print(f"\n[CRITICAL] Main, writing the {config_type} dataframe to CSV file: {config_current_csv} has failed")
-                print(f'Check the log file: {log_filename}. Exiting...')
-                sys.exit()
-    else: # No config current CSV file was found. Create one based on what is configured in the nG1 right now.
-        # This gives the user a template to modify in Excel.
-        status = write_dataframe_to_csv(right_now_df, config_current_csv, logger)
-        if status == False: # The write dataframe to CSV file operation has failed. Exit.
-            logger.critical(f"[CRITICAL] Main, write_dataframe_to_csv to CSV file: {config_current_csv} has failed")
-            print(f"\n[CRITICAL] Main, writing the {config_type} dataframe to CSV file: {config_current_csv} has failed")
-            print(f'Check the log file: {log_filename}. Exiting...')
-            sys.exit()
+    status = write_dataframe_to_csv(intersection_df, device_interfaces_intersection_filename, logger)
+    if status == False: # The write dataframe to CSV file operation has failed. Exit.
+        logger.critical(f"Main, write_dataframe_to_csv to CSV file: {device_interfaces_intersection_filename} has failed")
+        logger.info(f"\nMain, writing the dataframe to CSV file: {device_interfaces_intersection_filename} has failed")
+        print(f'Check the log file: {log_filename}. Exiting...')
+        sys.exit(1)
 
     # We are all finished, close the nG1 API session.
     if close_session(session, logger) == False: # Failed to close the API session.
-        logger.critical(f"[CRITICAL] Main, close_session has failed")
-        print(f"\n[CRITICAL] Main, Unable to close the nG1 API session")
+        logger.critical(f"Main, close_session has failed")
+        logger.info(f'\nMain, Unable to close the nG1 API session')
         print(f'Check the log file: {log_filename}. Exiting...')
-        sys.exit()
+        sys.exit(1)
 
-    print(f'[iNFO] The CSV file: {config_current_csv} was created at {time.ctime()}')
-    logger.info(f'[INFO] The CSV file: {config_current_csv} was created at {time.ctime()}')
-    print('[INFO] Program execution has completed Successfully')
-    logger.info('[INFO] Program execution has completed Successfully')
+    #logger.info(f'The CSV file: {config_current_csv} was created at {time.ctime()}')
+    logger.info('Program execution has completed Successfully')
+    sys.exit(0)
 
 if __name__ == "__main__":
     main()

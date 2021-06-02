@@ -607,7 +607,7 @@ def convert_json_dict_to_dataframe(config_data, config_type, logger):
     if config_type == 'sites':
         column_headers = ['id','name', 'addresses', 'speedKbps']
     elif config_type == 'devices':
-        column_headers = ['deviceName', 'deviceIPAddress', 'status']
+        column_headers = ['deviceName', 'deviceIPAddress', 'status', 'wanInterface', 'wanSpeed']
     elif config_type == 'interfaces':
         column_headers = ['deviceName', 'deviceIPAddress', 'interfaceName', 'interfaceNumber', 'interfaceSpeed', 'interfaceLinkType', 'status']
     elif config_type == 'client_comm':
@@ -777,8 +777,8 @@ def main():
         print(f'Check the log file: {log_filename}. Exiting...')
         sys.exit(1)
 
-    #print('ng1_devices_df is:')
-    #print(ng1_devices_df)
+    print('ng1_devices_df is:')
+    print(ng1_devices_df)
 
     # Backup the current configuration CSV created the last time this program ran (rename it if it exists).
     #status, config_current_is_found, current_df = backup_current_CSV(solarwinds_filename, solarwinds_archive_filename, logger)

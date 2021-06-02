@@ -39,39 +39,6 @@ __Language__ = "Python v3"
 # Disable the warnings for ignoring Self-Signed Certificates
 requests.packages.urllib3.disable_warnings()
 
-class ng1_device():
-
-    def __init__(self, deviceName, deviceIPAddress, status, deviceType, activeInterfaces, version):
-        self.deviceName = deviceName
-        self.deviceIPAddress = deviceIPAddress
-        self.status = status
-        self.deviceType = deviceType
-        self.activeInterfaces = activeInterfaces
-        self.version = version
-
-    def get_descriptions(self, seperator):
-        return self.deviceName + seperator + self.deviceIPAddress + seperator + self.status + seperator + self.deviceType + seperator + str(self.activeInterfaces) + seperator + self.version
-
-    def get_items(self, seperator):
-        return 'deviceName' + seperator + 'deviceIPAddress' + seperator + 'status' + seperator + 'deviceType' + seperator + 'activeInterfaces' + seperator + 'version'
-
-class ng1_interface():
-
-    def __init__(self, deviceName, deviceIPAddress, interfaceName, interfaceNumber, interfaceSpeed, interfaceLinkType, status):
-        self.deviceName = str(deviceName)
-        self.deviceIPAddress = str(deviceIPAddress)
-        self.interfaceName = str(interfaceName)
-        self.interfaceNumber = str(interfaceNumber)
-        self.interfaceSpeed = str(interfaceSpeed)
-        self.interfaceLinkType = str(interfaceLinkType)
-        self.status = str(status)
-
-    def get_descriptions(self, seperator):
-        return self.deviceName + seperator + self.deviceIPAddress + seperator + self.interfaceName + seperator + str(self.interfaceNumber) + seperator + self.interfaceSpeed + seperator + self.interfaceLinkType + seperator + self.status
-
-    def get_items(self, seperator):
-        return 'deviceName' + seperator + 'deviceIPAddress' + seperator + 'interfaceName' + seperator + 'interfaceNumber' + seperator + 'interfaceSpeed' + seperator + 'interfaceLinkType' + seperator + 'status'
-
 class Credentials:
     """
         A class to hold nG1 user credentials and other nG1 connection criteria.
@@ -174,9 +141,8 @@ def flags_and_arguments(prog_version, logger):
             is_set_config_true = False # I only need to do a get operation.
 
         return True, is_set_config_true
-    except Exception as e: # An error has occurred, log the error and return a status of False.
+    except Exception: # An error has occurred, log the error and return a status of False.
         logger.exception(f'[ERROR] Parsing the run command arguments has failed')
-        logger.exception(f"[ERROR] Exception error is:\n{e}")
         is_set_config_true = False
 
         return False, is_set_config_true
@@ -372,7 +338,7 @@ def close_session(session, logger):
         return False
 
 def get_devices(session, logger):
-    """Use the nG1 API to get the current device configuration in the system.
+    """Use the nG1 API to get the current device configuration for Active, MIBII devices in the system.
     :session: An instance of the ApiSession class that holds all our API session params.
     :logger: An instance of the logger class to write to in case of an error.
     :return: If successful, return stauts = True and the the devices object.
@@ -387,23 +353,19 @@ def get_devices(session, logger):
         if get.status_code == 200:
             # success
             logger.info(f'get devices nG1 API request Successful')
-            #print('MIB II Devices: ')
-            #print('No.: deviceName\tdeviceIPAddress\tstatus\tdeviceType\tactiveInterfaces\tversion')
-            # return the json object that contains the site information
-            #return get.json()
-            json_data=json.loads(get.text)
-            devices_count=len(json_data['deviceConfigurations'])
-            devices=[]
-            for i in range(devices_count):
-                if json_data['deviceConfigurations'][i]['deviceType'] == 'Router/Switch':
-                    json_data['deviceConfigurations'][i]['version'] = "N/A"
-                    device=ng1_device(json_data['deviceConfigurations'][i]['deviceName'],
-                    json_data['deviceConfigurations'][i]['deviceIPAddress'], json_data['deviceConfigurations'][i]['status'],
-                    json_data['deviceConfigurations'][i]['deviceType'], json_data['deviceConfigurations'][i]['activeInterfaces'],
-                    json_data['deviceConfigurations'][i]['version'])
-                    devices.append(device)
-                    #print(str(i+1) + ': ' + device.get_descriptions('\t'))
-            return True, devices
+            devices_data=json.loads(get.text)
+            #pprint.pprint(devices_data)
+            filtered_devices_data = {'deviceConfigurations':[]}
+            for device in devices_data['deviceConfigurations']:
+                device_status = device['status']
+                device_type = device['deviceType']
+                device_server = device['nG1ServerName']
+                if device_status == 'Active' and device_type == 'Router/Switch' and device_server == 'LocalServer': # Only include Active, MIBII devices.
+                    device['version'] = "N/A" # Fill in an empty field
+                    filtered_devices_data['deviceConfigurations'].append(device)
+                    #print("\nfiltered_devices_data is:")
+                    #pprint.pprint(filtered_devices_data, indent=4)
+            return True, filtered_devices_data
         else:
             logger.error(f'get devices nG1 API request failed.')
             logger.error(f'Response Code: {get.status_code}. Response Body: {get.text}.')
@@ -413,15 +375,50 @@ def get_devices(session, logger):
         logger.exception(f'URL sent is: {url}')
         return False, None
 
-def get_interfaces(device, session, logger):
-
-    """Use the nG1 API to get the current interface configuration for each device in the system.
+def get_device_wan_speeds(devices_config_data, session, logger):
+    """Use the nG1 API to get the single, active interface configuration for each active MIB II device in the system.
+    From that interface config info, add the name and speed of the WAN interface to the devices_config_data.
+    :devices_config_data: A dictionay that contains the current nG1 active MIB II devices.
     :session: An instance of the ApiSession class that holds all our API session params.
     :logger: An instance of the logger class to write to in case of an error.
-    :return: If successful, return the interfaces info in JSON format. Return status = True.
+    :return: If successful, return status = True and the appended devices_config_data.
     Return status = False and None if there are any errors or exceptions.
     """
-    uri = "/ng1api/ncm/devices/" + device.deviceName + "/interfaces"
+    try:
+        for device in devices_config_data['deviceConfigurations']:
+            device_name = device['deviceName']
+            device_ip_address = device['deviceIPAddress']
+            #print(f"{devices_config_data['deviceConfigurations'][i]['deviceName']=}")
+            status, interfaces_data = get_interfaces(device_name, device_ip_address, session, logger)
+            #pprint.pprint(interfaces_data)
+            if status == False:
+                logger.critical(f"get_device_wan_speeds, get_interfaces has failed")
+                return False, None
+            num_active_interfaces = len(interfaces_data['interfaceConfigurations'])
+            if num_active_interfaces != 1:
+                logger.error(f"Expected one Active WAN interface for device: {device_name}, got {num_active_interfaces} active interfaces")
+                return False, None
+            for interface in interfaces_data['interfaceConfigurations']:
+                if interface['deviceName'] == device['deviceName']: # Just double checking to make sure these align.
+                    device['wanInterface'] = interface['interfaceName']
+                    device['wanSpeed'] = interface['interfaceSpeed']
+        #pprint.pprint(devices_config_data)
+        return True, devices_config_data
+    except Exception: # Handle other unexpected errors.
+        logger.exception(f'get_device_wan_speeds failed')
+        return False, None
+
+
+def get_interfaces(device_name, device_ip_address, session, logger):
+    """Use the nG1 API to get the current interface configuration for each device in the system.
+    :device_name: A string that is the name of nG1 device.
+    :device_ip_address: A string that is the IP address of the nG1 device.
+    :session: An instance of the ApiSession class that holds all our API session params.
+    :logger: An instance of the logger class to write to in case of an error.
+    :return: If successful, return status = True and the interfaces info as a dict.
+    Return status = False and None if there are any errors or exceptions.
+    """
+    uri = "/ng1api/ncm/devices/" + device_name + "/interfaces"
     url = session.ng1_host + uri
 
     try:
@@ -430,30 +427,17 @@ def get_interfaces(device, session, logger):
 
         if get.status_code == 200:
             # success
-            logger.info(f'get interfaces for {device.deviceName} nG1 API request Successful')
-            interfaces=[]
-            #print('MIB II Device Interfaces: ')
-            #print('No.: deviceName\tinterfaceName\tinterfaceNumber\tinterfaceSpeed\tinterfaceLinkType\tstatus')
-            json_data=json.loads(get.text)
-            interfaceCount=len(json_data['interfaceConfigurations'])
-            for i in range(interfaceCount):
-                #print(f"\n{device.deviceType=}")
-                if 'PFOS' in device.deviceType:
+            logger.info(f'get interfaces for {device_name} nG1 API request Successful')
+            interface_data=json.loads(get.text)
+            filtered_interface_data = {'interfaceConfigurations':[]}
+            for interface in interface_data['interfaceConfigurations']:
+                if interface['status'] == 'ACT': # Only include active interfaces
                     # Correct for bug in nG1 API
-                    json_data['interfaceConfigurations'][i]['interfaceLinkType'] = json_data['interfaceConfigurations'][i]['portSpeed']
-                elif 'Router/Switch' in device.deviceType:
-                    # Correct for bug in nG1 API
-                    json_data['interfaceConfigurations'][i]['interfaceLinkType'] = json_data['interfaceConfigurations'][i]['portSpeed']
-                interface=ng1_interface(device.deviceName, device.deviceIPAddress, json_data['interfaceConfigurations'][i]['interfaceName'],
-                json_data['interfaceConfigurations'][i]['interfaceNumber'], json_data['interfaceConfigurations'][i]['interfaceSpeed'],
-                json_data['interfaceConfigurations'][i]['interfaceLinkType'], json_data['interfaceConfigurations'][i]['status'])
-                interfaces.append(interface)
-                #print(str(i+1) + ': ' + interface.get_descriptions('\t'))
-                json_data['interfaceConfigurations'][i]['deviceName'] = device.deviceName
-                json_data['interfaceConfigurations'][i]['deviceIPAddress'] = device.deviceIPAddress
-            return True, json_data
-            # return the json object that contains the site information
-            #return get.json()
+                    interface['interfaceLinkType'] = interface['portSpeed']
+                    interface['deviceName'] = device_name
+                    interface['deviceIPAddress'] = device_ip_address
+                    filtered_interface_data['interfaceConfigurations'].append(interface)
+            return True, filtered_interface_data
         else:
             logger.error(f'get interfaces nG1 API request failed.')
             logger.error(f'Response Code: {get.status_code}. Response Body: {get.text}.')
@@ -463,238 +447,35 @@ def get_interfaces(device, session, logger):
         logger.exception(f'URL sent is: {url}')
         return False, None
 
-def get_domains(ng1_host, headers, cookies, logger): #ng1 cannot support json output, why?
-    get_domains_uri = "/ng1api/ncm/domains"
-    get_domains_url = ng1_host + get_domains_uri
+def get_services(session, logger):
+    """Use the nG1 API to get the current services configuration. Filter to just the network services.
+    :session: An instance of the ApiSession class that holds all our API session params.
+    :logger: An instance of the logger class to write to in case of an error.
+    :return: If successful, return status = True and the network services info as a dict.
+    Return status = False and None if there are any errors or exceptions.
+    """
+    uri = "/ng1api/ncm/services?type=network"
+    url = session.ng1_host + uri
+
     try:
-        # perform the HTTPS API call
-        get = requests.request("GET", get_domains_url, verify=False, cookies=cookies)
+        # perform the HTTPS API call to get the devices information
+        get = requests.get(url, headers=session.headers, verify=False, cookies=session.cookies)
 
         if get.status_code == 200:
             # success
-            logger.info('Get Domains Successfully.')
-
-            #print('No.: deviceName\tdeviceIPAddress\tstatus\tdeviceType\tactiveInterfaces\tversion')
-            #json_data=json.loads(get.text)
-            #devices_count=len(json_data['deviceConfigurations'])
-            domains=[]
-            #for i in range(devices_count):
-            #    device=ng1_device(json_data['deviceConfigurations'][i]['deviceName'], json_data['deviceConfigurations'][i]['deviceIPAddress'], json_data['deviceConfigurations'][i]['status'], json_data['deviceConfigurations'][i]['deviceType'], json_data['deviceConfigurations'][i]['activeInterfaces'], json_data['deviceConfigurations'][i]['version'])
-            #    devices.append(device)
-            #    print(str(i+1) + ': ' + device.get_descriptions('\t'))
-            return True, domains
+            logger.info(f'get network services nG1 API request Successful')
+            services_data=json.loads(get.text)
+            return True, services_data
         else:
-            logger.error('Get domains Failed. Response Code: ' + str(get.status_code) + '. Response Body: ' + get.text + '.')
+            logger.error(f'get services nG1 API request failed.')
+            logger.error(f'Response Code: {get.status_code}. Response Body: {get.text}.')
             return False, None
     except Exception: # Handle other unexpected errors.
-        logger.exception(f'get domains nG1 API request failed')
+        logger.exception(f'get services nG1 API request failed')
         logger.exception(f'URL sent is: {url}')
-        return False
-
-def get_domain_detail(session, domainName, logger): #ng1 cannot support json output, why?
-    get_domain_uri = "/ng1api/ncm/domains/" + domainName
-    get_domain_url = ng1_host + get_domain_uri
-    # perform the HTTPS API call
-    #get = requests.request("GET", get_domain_url, headers=headers, verify=False, cookies=cookies)
-    get = requests.request("GET", get_domain_url, verify=False, cookies=cookies)
-
-    if get.status_code == 200:
-        # success
-        logger.info('Get Domain Detail Successfully.')
-        logger.info('Response Code: ' + str(get.status_code))
-        logger.info('Response Body: ' + get.text)
-        #print('No.: deviceName\tdeviceIPAddress\tstatus\tdeviceType\tactiveInterfaces\tversion')
-        #json_data=json.loads(get.text)
-        #devices_count=len(json_data['deviceConfigurations'])
-        #devices=[]
-        #for i in range(devices_count):
-        #    device=ng1_device(json_data['deviceConfigurations'][i]['deviceName'], json_data['deviceConfigurations'][i]['deviceIPAddress'], json_data['deviceConfigurations'][i]['status'], json_data['deviceConfigurations'][i]['deviceType'], json_data['deviceConfigurations'][i]['activeInterfaces'], json_data['deviceConfigurations'][i]['version'])
-        #    devices.append(device)
-        #    print(str(i+1) + ': ' + device.get_descriptions('\t'))
-        return True
-    else:
-        logger.error('Get Domain Detail Failed. Response Code: ' + str(get.status_code) + '. Response Body: ' + get.text + '.')
-        return False
-
-def post_domain(domain, ng1_host, headers, cookies, logger):
-    post_domain_uri = "/ng1api/ncm/domains/"
-    post_domain_url = ng1_host + post_domain_uri
-    # perform the HTTPS API call
-    post = requests.request("POST", post_domain_url, data=json.dumps(domain), headers=headers, verify=False, cookies=cookies)
-
-    if post.status_code == 200:
-        # success
-        logger.info('Post Domain Successfully.')
-        logger.info('Response Code: ' + str(post.status_code))
-        logger.info('Response Body: ' + post.text)
-        json_data=json.loads(post.text)
-        domainName=json_data['domainDetail'][0]['domainName']
-        domainID=json_data['domainDetail'][0]['id']
-        print('The ID of Domain [' + domainName + '] is: ' + str(domainID))
-        return True, domainID
-    else:
-        logger.error('Post Domain Failed. Response Code: ' + str(post.status_code) + '. Response Body: ' + post.text + '.')
         return False, None
 
-def get_service(serviceName, ng1_host, headers, cookies, logger):
-    get_service_uri = "/ng1api/ncm/services/" + serviceName
-    get_service_url = ng1_host + get_service_uri
-    # perform the HTTPS API call
-    get = requests.request("GET", get_service_url, headers=headers, verify=False, cookies=cookies)
 
-    if get.status_code == 200:
-        # success
-        logger.info('Get Service Successfully.')
-        logger.info('Response Code: ' + str(get.status_code))
-        logger.info('Response Body: ' + get.text)
-        json_data=json.loads(get.text)
-        serviceType=json_data['serviceDetail'][0]['serviceType']
-        serviceID=json_data['serviceDetail'][0]['id']
-        serviceName=json_data['serviceDetail'][0]['serviceName']
-        membersCount=len(json_data['serviceDetail'][0]['serviceMembers'])
-        if serviceType == 1:
-            serviceTypeStr = 'Application'
-        elif serviceType == 6:
-            serviceTypeStr = 'Network'
-        else:
-            serviceTypeStr = 'Others'
-        print('The type of ' + serviceName + ' is ' + serviceTypeStr + '; ID = ' +  serviceID + '; It has ' + str(membersCount) + ' members.')
-        return True
-    else:
-        logger.error('Get Service Failed. Response Code: ' + str(get.status_code) + '. Response Body: ' + get.text + '.')
-        return False
-
-def post_service(service, ng1_host, headers, cookies, logger):
-
-    post_service_uri = "/ng1api/ncm/services"
-    post_service_url = ng1_host + post_service_uri
-    post = requests.request("POST", post_service_url, data=json.dumps(service), headers=headers, verify=False, cookies=cookies)
-
-    if post.status_code == 200:
-        # success
-        logger.info('Post Service Successfully.')
-        logger.info('Response Code: ' + str(post.status_code))
-        logger.info('Response Body: ' + post.text)
-        json_data=json.loads(post.text)
-        serviceName=json_data['serviceDetail'][0]['serviceName']
-        serviceID=json_data['serviceDetail'][0]['id']
-        return True, serviceName
-    else:
-        logger.error('Post Service Failed. Response Code: ' + str(post.status_code) + '. Response Body: ' + post.text + '.')
-        return False, None
-
-def post_service_into_domain(domembers, domainName, ng1_host, headers, cookies, logger):
-
-    post_domembers_uri = "/ng1api/ncm/domains/" + domainName + '/members'
-    post_domembers_url = ng1_host + post_domembers_uri
-    post = requests.request("POST", post_domembers_url, data=json.dumps(domembers), headers=headers, verify=False, cookies=cookies)
-
-    if post.status_code == 200:
-        # success
-        logger.info('Post Service into Domain Successfully.')
-        logger.info('Response Code: ' + str(post.status_code))
-        logger.info('Response Body: ' + post.text)
-        json_data=json.loads(post.text)
-        return True
-    else:
-        logger.error('Post Service into Domain Failed. Response Code: ' + str(post.status_code) + '. Response Body: ' + post.text + '.')
-        return False
-
-def demo_Add_Domain_into_Level1(session, domainName, logger):
-
-    # Add a Domain into level 1
-    ''' Sample
-    domains = {
-            "domainDetail":[
-                {
-                    "userList": "ADMINISTRATOR"
-                    "domainName": "myDomain",
-                    "id": -1,
-                    "parentID": 1
-                }
-            ]
-        }
-    '''
-    #domainName=input('domainName: ')
-    domains_dict={}
-    domain_ary=[]
-    domain_dict={}
-
-    domain_dict['userList']='ADMINISTRATOR'
-    domain_dict['domainName']=domainName
-    domain_dict['id']=-1
-    domain_dict['parentID']=1
-    domain_ary.append(domain_dict.copy())
-    domains_dict['domainDetail']=domain_ary
-
-    print('The data to be posted is : ')
-    print(domains_dict)
-
-    post_domain_status, domainID = post_domain(domains_dict, ng1_host, headers, cookies, logger)
-
-
-def demo_Add_Domain_into_Level2(session, logger):
-    # Open a session to nG1 and resuse this session for all our API calls.
-    cookies = open_session(ng1_host, ng1_username, ng1_password, headers, logger)
-    if cookies is None: # Opening the session to ng1 has failed. Exit.
-        return
-
-    # Add a Domain into level 1 and if exist, it will return the Domian ID
-    ''' Sample
-    domains = {
-            "domainDetail":[
-                {
-                    "userList": "ADMINISTRATOR"
-                    "domainName": "myDomain",
-                    "id": -1,
-                    "parentID": 1
-                }
-            ]
-        }
-    '''
-    domainNameL1=input('Level 1 - domainName: ')
-    domainNameL2=input('Level 2 - domainName: ')
-
-    domainsL1_dict={}
-    domainL1_ary=[]
-    domainL1_dict={}
-
-    domainL1_dict['userList']='ADMINISTRATOR'
-    domainL1_dict['domainName']=domainNameL1
-    domainL1_dict['id']=-1
-    domainL1_dict['parentID']=1
-    domainL1_ary.append(domainL1_dict.copy())
-    domainsL1_dict['domainDetail']=domainL1_ary
-
-    print('The data to be posted is : ')
-    print(domainsL1_dict)
-
-    post_domain_status, domainL1ID = post_domain(domainsL1_dict, ng1_host, headers, cookies, logger)
-
-    if post_domain_status == True:
-        domainsL2_dict={}
-        domainL2_ary=[]
-        domainL2_dict={}
-
-        domainL2_dict['userList']='ADMINISTRATOR'
-        domainL2_dict['domainName']=domainNameL2
-        domainL2_dict['id']=-1
-        domainL2_dict['parentID']=int(domainL1ID)
-        domainL2_ary.append(domainL2_dict.copy())
-        domainsL2_dict['domainDetail']=domainL2_ary
-
-        print('The data to be posted is : ')
-        print(domainsL2_dict)
-
-        post_domain_status, domainL2ID = post_domain(domainsL2_dict, ng1_host, headers, cookies, logger)
-
-    # Close the session to nG1.
-    close_status = close_session(ng1_host, headers, cookies, logger)
-    if close_status == False: # Closing the session to ng1 has failed. Exit.
-        return
-    else:
-        # We are done. Exit anyway.
-        return
 
 def convert_current_solarwinds_CSV_to_dataframe(config_current_csv, logger):
     """If found in the local directory, read the solarwinds_filename into a pandas dataframe for merging later.
@@ -712,10 +493,10 @@ def convert_current_solarwinds_CSV_to_dataframe(config_current_csv, logger):
             columns = ['Caption','IP_Address', 'CorpSCADA_Type', 'LOB', 'MLOB', 'Site']
             current_df = pd.read_csv(config_current_csv, sep='\t', usecols=columns, engine='python', encoding='utf-16')
             #current_df_mod = current_df.rename(columns={'IP_Address': 'deviceIPAddress'}, axis='columns')
-            print("\nThe type of df that current_df is:")
+            logger.info(f"The solarwinds CSV file {config_current_csv} was found")
             current_df.rename({'IP_Address': 'deviceIPAddress'}, axis=1, inplace=True)
 
-            print(f'\nCurrent df is: \n{current_df}')
+            #print(f'\nCurrent df is: \n{current_df}')
             logger.info(f"Conversion of CSV file: {config_current_csv} to a dataframe Successful")
             # The current dataframe may contain new rows where the id number is blank as new config items don't have an id yet.
             #current_df['id'] = current_df['id'].fillna(0) # Replace NaNs (empty id numbers) with zeros.
@@ -825,6 +606,8 @@ def convert_json_dict_to_dataframe(config_data, config_type, logger):
     """
     if config_type == 'sites':
         column_headers = ['id','name', 'addresses', 'speedKbps']
+    elif config_type == 'devices':
+        column_headers = ['deviceName', 'deviceIPAddress', 'status']
     elif config_type == 'interfaces':
         column_headers = ['deviceName', 'deviceIPAddress', 'interfaceName', 'interfaceNumber', 'interfaceSpeed', 'interfaceLinkType', 'status']
     elif config_type == 'client_comm':
@@ -900,15 +683,18 @@ def find_intersection_solarwinds_to_current_device_interfaces(solarwinds_current
         logger.exception(f'find_intersection_solarwinds_to_current_device_interfaces has failed"')
         return False, None
 
-
-
-
+def create_network_service_configs(intersection_df, logger):
+    """Take the information in the intersection_df and produce a full list of desired network service definitions.
+    :intersection_df: The dataframe that holds matching MIBII devices in nG1 to those listed in the solarwinds_filename.
+    :logger: An instance of the logger object to write to in case of an error.
+    :return: If successful, return status = True and the network services definitions.
+    Return status = False and None if there are any errors or exceptions.
+    """
 # -----------------------------------------------------------------------------------------------------------------
 def main():
     prog_version = '0.0'
     now = datetime.now()
     date_time = now.strftime("%Y_%m_%d_%H%M%S") # Used for timestamping filenames.
-
 
     # Create a logger instance and write the starting date_time to a log file.
     log_filename = 'TC_devices_sync_' + date_time + '.log' #The name of the log file we will write to.
@@ -920,7 +706,7 @@ def main():
 
     status, is_set_config_true = flags_and_arguments(prog_version, logger)
     if status == False: # Parsing the run command flags or arguments has failed Exit.
-        logger.info("\nMain, Parsing the run command flags has failed")
+        logger.info("\nMain, Parsing the run command arguments has failed")
         print('Exiting...')
         sys.exit(1)
 
@@ -931,7 +717,7 @@ def main():
     # Hardcoding the name of the CSV file that holds the intersection of MIB II device interface configurations as matched by IP address.
     solarwinds_archive_filename = 'solarwinds_config_archive' # No extention as we will append a time-date + .csv to the name.
     # Hardcoding the name of the "archive" CSV file that we will use to backup the "current" Solarwinds CSV file.
-    device_interfaces_intersection_filename = 'device_interfaces_intersection.csv'
+    devices_intersection_filename = 'devices_intersection.csv'
     # Hardcoding the name of the "change_log" CSV file that we will use to output and differences seen since last program execution.
     solarwinds_change_log_csv = 'solarwinds_change_log.csv' # This file will get overwritten by design.
     # Hardcoding the filenames for encrypted credentials and the key file needed to decrypt the credentials.
@@ -966,52 +752,33 @@ def main():
         print(f'Check the log file: {log_filename}. Exiting...')
         sys.exit(1)
 
-    # List all the devices
-    status, devices_array = get_devices(session, logger)
+    # Get all the Active MIB II devices currently configured in nG1
+    status, devices_config_data = get_devices(session, logger)
     if status == False: # get_devices has failed. Exit.
         logger.critical(f"Main, get_devices has failed")
         logger.info(f"\nMain, get_devices has failed")
         print(f'Check the log file: {log_filename}. Exiting...')
         sys.exit(1)
-    else:
-        interface_df_list = []
-        for device in devices_array:
-            if device.status == 'Active' and device.deviceType == 'Router/Switch':
-                status, current_interfaces_data = get_interfaces(device, session, logger)
-                if status == False: # get_interfaces has failed. Exit.
-                    logger.critical(f"Main, get_interfaces has failed")
-                    logger.info(f"\nMain, get_interfaces has failed")
-                    print(f'Check the log file: {log_filename}. Exiting...')
-                    sys.exit(1)
-                else:
-                    # Convert the json nested dictionary to a flatend dataframe in pandas.
-                    config_type = 'interfaces'
-                    status, interface_df = convert_json_dict_to_dataframe(current_interfaces_data, config_type, logger)
-                    interface_df_list.append(interface_df)
-                    #print(f"right_now_df = \n{right_now_df}\n")
-                    if status == False: # The conversion has failed. Exit.
-                        logger.critical(f"Main, dataframe conversion has failed")
-                        logger.info(f"\nMain, dataframe conversion has failed")
-                        print(f'Check the log file: {log_filename}. Exiting...')
-                        sys.exit(1)
-        for interface_df in interface_df_list:
-            print(f"\n{interface_df}")
-        right_now_df = pd.concat(interface_df_list, ignore_index=True)
-        print(f"\n{right_now_df}")
 
+    # For each MIB II device in nG1, get the WAN speed of the only Active WAN interface.
+    # Add the WAN speed as an attribute to the nG1 devices_config_data.
+    status, devices_config_data = get_device_wan_speeds(devices_config_data, session, logger)
+    if status == False: # Getting the interface wan speeds has failed.
+        logger.critical(f"Main, get_device_wan_speeds has failed")
+        logger.info(f"\nMain, get_device_wan_speeds has failed")
+        print(f'Check the log file: {log_filename}. Exiting...')
+        sys.exit(1)
 
-    # List all the domains
-    #status, list_domains_ary = get_domains(ng1_host, headers, cookies, logger)
+    config_type = 'devices'
+    status, ng1_devices_df = convert_json_dict_to_dataframe(devices_config_data, config_type, logger)
+    if status == False: # The conversion has failed. Exit.
+        logger.critical(f"Main, dataframe conversion has failed")
+        logger.info(f"\nMain, dataframe conversion has failed")
+        print(f'Check the log file: {log_filename}. Exiting...')
+        sys.exit(1)
 
-    # Get detail on a specific Domain
-    #status = get_domain_detail(session, domainName, logger)
-
-    #status = demo_Add_Domain_into_Level1(session, domainName, logger)
-
-    #status = demo_Add_Domain_into_Level2(session, logger)
-
-    #status = demo_Get_Service(session, logger)
-
+    #print('ng1_devices_df is:')
+    #print(ng1_devices_df)
 
     # Backup the current configuration CSV created the last time this program ran (rename it if it exists).
     #status, config_current_is_found, current_df = backup_current_CSV(solarwinds_filename, solarwinds_archive_filename, logger)
@@ -1021,15 +788,13 @@ def main():
         #print(f'Check the log file: {log_filename}. Exiting...')
         #sys.exit(1)
 
-    status = write_dataframe_to_csv(right_now_df, device_interfaces_config_current_filename, logger)
+    status = write_dataframe_to_csv(ng1_devices_df, device_interfaces_config_current_filename, logger)
     if status == False: # The write dataframe to CSV file operation has failed. Exit.
         logger.critical(f"Main, write_dataframe_to_csv to CSV file: {device_interfaces_config_current_filename} has failed")
         logger.info(f"\nMain, writing the dataframe to CSV file: {device_interfaces_config_current_filename} has failed")
         print(f'Check the log file: {log_filename}. Exiting...')
         sys.exit(1)
 
-    #if config_current_is_found:
-        #print(f"I found the {solarwinds_filename} file!!")
     status, solarwinds_current_df = convert_current_solarwinds_CSV_to_dataframe(solarwinds_filename, logger)
     if status == False: # Conversion of current solarwinds CSV to a pandas dataframe has failed.
         logger.critical(f"Main, convert_current_solarwinds_CSV_to_dataframe has failed")
@@ -1037,19 +802,36 @@ def main():
         print(f'Check the log file: {log_filename}. Exiting...')
         sys.exit(1)
 
-    status, intersection_df = find_intersection_solarwinds_to_current_device_interfaces(solarwinds_current_df, right_now_df, logger)
+    status, intersection_df = find_intersection_solarwinds_to_current_device_interfaces(solarwinds_current_df, ng1_devices_df, logger)
     if status == False: # The write dataframe to CSV file operation has failed. Exit.
         logger.critical(f"Main, find_intersection_solarwinds_to_current_device_interfaces has failed")
         logger.info(f"\nMain, find_intersection_solarwinds_to_current_device_interfaces has failed")
         print(f'Check the log file: {log_filename}. Exiting...')
         sys.exit(1)
 
-    status = write_dataframe_to_csv(intersection_df, device_interfaces_intersection_filename, logger)
+    status = write_dataframe_to_csv(intersection_df, devices_intersection_filename, logger)
     if status == False: # The write dataframe to CSV file operation has failed. Exit.
-        logger.critical(f"Main, write_dataframe_to_csv to CSV file: {device_interfaces_intersection_filename} has failed")
-        logger.info(f"\nMain, writing the dataframe to CSV file: {device_interfaces_intersection_filename} has failed")
+        logger.critical(f"Main, write_dataframe_to_csv to CSV file: {devices_intersection_filename} has failed")
+        logger.info(f"\nMain, writing the dataframe to CSV file: {devices_intersection_filename} has failed")
         print(f'Check the log file: {log_filename}. Exiting...')
         sys.exit(1)
+
+    #status, network_service_configs = create_network_service_configs(intersection_df, logger)
+
+    if status == False: # The create_network_service_configs operation has failed. Exit.
+        logger.critical(f"Main, create_network_service_configs has failed")
+        logger.info(f"\nMain, create_network_service_configs has failed")
+        print(f'Check the log file: {log_filename}. Exiting...')
+        sys.exit(1)
+
+    status, services_data = get_services(session, logger)
+    if status == False: # The get services nG1 API call has failed. Exit.
+        logger.critical(f"Main, get_services has failed")
+        logger.info(f"\nMain, get_services has failed")
+        print(f'Check the log file: {log_filename}. Exiting...')
+        sys.exit(1)
+
+    #pprint.pprint(services_data)
 
     # We are all finished, close the nG1 API session.
     if close_session(session, logger) == False: # Failed to close the API session.

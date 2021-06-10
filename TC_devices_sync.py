@@ -354,18 +354,23 @@ def get_devices(session, logger):
             # success
             logger.info(f'get devices nG1 API request Successful')
             devices_data=json.loads(get.text)
-            #pprint.pprint(devices_data)
+           # pprint.pprint(devices_data)
             filtered_devices_data = {'deviceConfigurations':[]}
             for device in devices_data['deviceConfigurations']:
                 device_status = device['status']
                 device_type = device['deviceType']
                 device_server = device['nG1ServerName']
-                if device_status == 'Active' and device_type == 'Router/Switch' and device_server == 'LocalServer': # Only include Active, MIBII devices.
+                if device_status == 'Active' and device_type == 'Router/Switch': # Only include Active, MIBII devices.
                     device['version'] = "N/A" # Fill in an empty field
                     filtered_devices_data['deviceConfigurations'].append(device)
                     #print("\nfiltered_devices_data is:")
                     #pprint.pprint(filtered_devices_data, indent=4)
-            return True, filtered_devices_data
+            # Check for empty devices_data dict:
+            if len(devices_data['deviceConfigurations']) < 1:
+                    logger.error(f'No Active MIBII devices returned from get devices')
+                    return False, None
+            else:
+                 return True, filtered_devices_data
         else:
             logger.error(f'get devices nG1 API request failed.')
             logger.error(f'Response Code: {get.status_code}. Response Body: {get.text}.')
@@ -760,6 +765,10 @@ def main():
         print(f'Check the log file: {log_filename}. Exiting...')
         sys.exit(1)
 
+    # print("devices_config_data is: ")
+    # pprint.pprint(devices_config_data)
+
+
     # For each MIB II device in nG1, get the WAN speed of the only Active WAN interface.
     # Add the WAN speed as an attribute to the nG1 devices_config_data.
     status, devices_config_data = get_device_wan_speeds(devices_config_data, session, logger)
@@ -768,6 +777,9 @@ def main():
         logger.info(f"\nMain, get_device_wan_speeds has failed")
         print(f'Check the log file: {log_filename}. Exiting...')
         sys.exit(1)
+
+   # print("devices_config_data is: ")
+   # pprint.pprint(devices_config_data)
 
     config_type = 'devices'
     status, ng1_devices_df = convert_json_dict_to_dataframe(devices_config_data, config_type, logger)
@@ -824,7 +836,7 @@ def main():
         print(f'Check the log file: {log_filename}. Exiting...')
         sys.exit(1)
 
-    status, services_data = get_services(session, logger)
+    # status, services_data = get_services(session, logger)
     if status == False: # The get services nG1 API call has failed. Exit.
         logger.critical(f"Main, get_services has failed")
         logger.info(f"\nMain, get_services has failed")

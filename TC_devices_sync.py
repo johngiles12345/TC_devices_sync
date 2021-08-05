@@ -402,16 +402,29 @@ def get_devices(session, logger):
             filtered_devices_data = {'deviceConfigurations':[]}
             for device in devices_data['deviceConfigurations']:
                 device_type = device['deviceType']
+<<<<<<< HEAD
                 device_status = device['status']
                 if device_type == 'Router/Switch' and device_status == 'Active': # Only include Active MIBII devices.
+=======
+                device_server = device['nG1ServerName']
+                if device_status == 'Active' and device_type == 'Router/Switch': # Only include Active, MIBII devices.
+>>>>>>> 5226efb409bc2a49d4b9d5a2069146fd8af9a380
                     device['version'] = "N/A" # Fill in an empty field
                     device['wan_interfaces'] = [] # Initialize empty list to hold interfaces
                     filtered_devices_data['deviceConfigurations'].append(device)
+<<<<<<< HEAD
             #print("\nfiltered_devices_data is:")
             #pprint.pprint(filtered_devices_data, indent=4)
             # Check for empty devices_data dict:
             if len(devices_data['deviceConfigurations']) < 1:
                     logger.error(f'No MIBII devices returned from get devices')
+=======
+                    #print("\nfiltered_devices_data is:")
+                    #pprint.pprint(filtered_devices_data, indent=4)
+            # Check for empty devices_data dict:
+            if len(devices_data['deviceConfigurations']) < 1:
+                    logger.error(f'No Active MIBII devices returned from get devices')
+>>>>>>> 5226efb409bc2a49d4b9d5a2069146fd8af9a380
                     return False, None
             else:
                  return True, filtered_devices_data
@@ -1718,6 +1731,7 @@ def main():
         print(f'Check the log file: {log_filename}. Exiting...')
         sys.exit(1)
 
+<<<<<<< HEAD
     #print("\nMain: devices_config_data is: ")
     #pprint.pprint(devices_config_data)
 
@@ -1735,6 +1749,23 @@ def main():
 
     #print("\nMain2: devices_config_data is: ")
     #pprint.pprint(devices_config_data)
+=======
+    # print("devices_config_data is: ")
+    # pprint.pprint(devices_config_data)
+
+
+    # For each MIB II device in nG1, get the WAN speed of the only Active WAN interface.
+    # Add the WAN speed as an attribute to the nG1 devices_config_data.
+    status, devices_config_data = get_device_wan_speeds(devices_config_data, session, logger)
+    if status == False: # Getting the interface wan speeds has failed.
+        logger.critical(f"Main, get_device_wan_speeds has failed")
+        logger.info(f"\nMain, get_device_wan_speeds has failed")
+        print(f'Check the log file: {log_filename}. Exiting...')
+        sys.exit(1)
+
+   # print("devices_config_data is: ")
+   # pprint.pprint(devices_config_data)
+>>>>>>> 5226efb409bc2a49d4b9d5a2069146fd8af9a380
 
     config_type = 'devices'
     status, ng1_devices_df = convert_json_dict_to_dataframe(devices_config_data, config_type, logger)
@@ -1817,9 +1848,16 @@ def main():
         print(f'Check the log file: {log_filename}. Exiting...')
         sys.exit(1)
 
+<<<<<<< HEAD
     status, intersection_df = add_alert_profile_ids(intersection_df, alert_profile_ids_dict, logger)
     if status == False: # The add alert profile id number opertation failed. Exit.
         logger.critical(f"Main, add_alert_profile_ids has failed")
+=======
+    # status, services_data = get_services(session, logger)
+    if status == False: # The get services nG1 API call has failed. Exit.
+        logger.critical(f"Main, get_services has failed")
+        logger.info(f"\nMain, get_services has failed")
+>>>>>>> 5226efb409bc2a49d4b9d5a2069146fd8af9a380
         print(f'Check the log file: {log_filename}. Exiting...')
         sys.exit(1)
 

@@ -29,10 +29,10 @@ The new network service is added to the correct domain in the dashboard hierarch
 
 """
 
-__version__ = "0.3"
+__version__ = "0.4"
 __status__ = "beta"
 __author__ = "John Giles"
-__date__ = "2021 July 30th"
+__date__ = "2021 August 5th"
 __env__= "Windows/Linux"
 __Language__ = "Python v3"
 

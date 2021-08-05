@@ -117,7 +117,8 @@ def flags_and_arguments(prog_version, logger):
     Adding --set flag will tell the program to both get the nG1 config and set the nG1 config to
      match the "current" Solarwinds file.
     If the --set flag is not specified by the user, the program will gather the current nG1 config and
-    the current Solarwinds config. Then it will merge the required columns and produce a config CSV file.
+    the current Solarwinds config. Then it will merge the required columns and produce a
+    net_srv_add_candidates.csv file.
     Then it will exit without performing any set commands to nG1 (will not sync the current Solarwinds file
     to the actual nG1 configuration).
     :program_version: Pass in the program version so the user can type --version.
@@ -402,29 +403,23 @@ def get_devices(session, logger):
             filtered_devices_data = {'deviceConfigurations':[]}
             for device in devices_data['deviceConfigurations']:
                 device_type = device['deviceType']
-<<<<<<< HEAD
                 device_status = device['status']
                 if device_type == 'Router/Switch' and device_status == 'Active': # Only include Active MIBII devices.
-=======
-                device_server = device['nG1ServerName']
+                    device_server = device['nG1ServerName']
                 if device_status == 'Active' and device_type == 'Router/Switch': # Only include Active, MIBII devices.
->>>>>>> 5226efb409bc2a49d4b9d5a2069146fd8af9a380
                     device['version'] = "N/A" # Fill in an empty field
                     device['wan_interfaces'] = [] # Initialize empty list to hold interfaces
                     filtered_devices_data['deviceConfigurations'].append(device)
-<<<<<<< HEAD
             #print("\nfiltered_devices_data is:")
             #pprint.pprint(filtered_devices_data, indent=4)
             # Check for empty devices_data dict:
             if len(devices_data['deviceConfigurations']) < 1:
                     logger.error(f'No MIBII devices returned from get devices')
-=======
                     #print("\nfiltered_devices_data is:")
                     #pprint.pprint(filtered_devices_data, indent=4)
             # Check for empty devices_data dict:
             if len(devices_data['deviceConfigurations']) < 1:
                     logger.error(f'No Active MIBII devices returned from get devices')
->>>>>>> 5226efb409bc2a49d4b9d5a2069146fd8af9a380
                     return False, None
             else:
                  return True, filtered_devices_data
@@ -1154,7 +1149,7 @@ def add_alert_profile_ids(intersection_df, alert_profiles_ids_dict, logger):
             return False, None
     return True, intersection_df
 
-def create_network_service_configs(session, MIBII_network_services, intersection_df, logger):
+def create_network_service_configs(session, is_set_config_true, MIBII_network_services, intersection_df, logger):
     """Take the information in the intersection_df and for each MIBII device, create a network service definition
     if it has a qualified service provider WAN interface.
     For each service that is created, get the service ID number fron nG1 API,
@@ -1162,6 +1157,7 @@ def create_network_service_configs(session, MIBII_network_services, intersection
     We will need those ID numbers to place them into the dashboard later.
     Then call the function to create each network service using the nG1 API.
     :session: An instance of the ApiSession class that holds all our API session params.
+    :is_set_config_true: A boolean that tells the system to perform set operations if True.
     :MIBII_network_services: A list of network service names ending in '_MIB Polling'.
     :intersection_df: The dataframe that holds matching MIBII devices in nG1 to those listed in the solarwinds_filename.
     :logger: An instance of the logger object to write to in case of an error.
@@ -1227,27 +1223,28 @@ def create_network_service_configs(session, MIBII_network_services, intersection
                 # Add it to the net_srv_add_candidates.csv file
                 writer.writerow([network_service_name])
                 # Create the new network service.
-                status = create_service(session, svcs_dict, network_service_name, logger)
-                if status == False:
-                    logger.error(f'create_service: {network_service_name} has failed')
-                    return False, None, None
-                #time.sleep(1) # Give it a second before we request the ID number.
-                # We need to know the id number that was assigned to this new network service, so we get_service_detail on it.
-                # We store this id number in the intersection_df so that later we can add it as a member to to the region domain.
-                status, net_srv_config_data = get_service_detail(session, network_service_name, logger)
-                if status == False:
-                    logger.error(f'create_service: {network_service_name} has failed')
-                    logger.error(f'call to get_service_detail has failed')
-                    return False, None, None
-                elif net_srv_config_data == None:
-                    logger.error(f'create_service: {network_service_name} has failed')
-                    logger.error(f'call to get_service_detail returned an empty net_srv_config_data')
-                    return False, None, None
-                #print('\nnet_srv_config_data is:')
-                #print(f'{net_srv_config_data}')
-                net_srv_id = net_srv_config_data['serviceDetail'][0]['id']
-                intersection_df.at[index, "netServiceID"] = net_srv_id
-                adds_or_mods_counter += 1
+                if is_set_config_true == True: # Perform the set operations
+                    status = create_service(session, svcs_dict, network_service_name, logger)
+                    if status == False:
+                        logger.error(f'create_service: {network_service_name} has failed')
+                        return False, None, None
+                    #time.sleep(1) # Give it a second before we request the ID number.
+                    # We need to know the id number that was assigned to this new network service, so we get_service_detail on it.
+                    # We store this id number in the intersection_df so that later we can add it as a member to to the region domain.
+                    status, net_srv_config_data = get_service_detail(session, network_service_name, logger)
+                    if status == False:
+                        logger.error(f'create_service: {network_service_name} has failed')
+                        logger.error(f'call to get_service_detail has failed')
+                        return False, None, None
+                    elif net_srv_config_data == None:
+                        logger.error(f'create_service: {network_service_name} has failed')
+                        logger.error(f'call to get_service_detail returned an empty net_srv_config_data')
+                        return False, None, None
+                    #print('\nnet_srv_config_data is:')
+                    #print(f'{net_srv_config_data}')
+                    net_srv_id = net_srv_config_data['serviceDetail'][0]['id']
+                    intersection_df.at[index, "netServiceID"] = net_srv_id
+                    adds_or_mods_counter += 1
     except PermissionError as e:
         logger.info('Opening file: net_srv_add_candidates.csv for writing has failed')
         logger.error (f"Permission error is:\n{e}")
@@ -1731,7 +1728,6 @@ def main():
         print(f'Check the log file: {log_filename}. Exiting...')
         sys.exit(1)
 
-<<<<<<< HEAD
     #print("\nMain: devices_config_data is: ")
     #pprint.pprint(devices_config_data)
 
@@ -1749,23 +1745,22 @@ def main():
 
     #print("\nMain2: devices_config_data is: ")
     #pprint.pprint(devices_config_data)
-=======
+
     # print("devices_config_data is: ")
     # pprint.pprint(devices_config_data)
 
 
     # For each MIB II device in nG1, get the WAN speed of the only Active WAN interface.
     # Add the WAN speed as an attribute to the nG1 devices_config_data.
-    status, devices_config_data = get_device_wan_speeds(devices_config_data, session, logger)
-    if status == False: # Getting the interface wan speeds has failed.
-        logger.critical(f"Main, get_device_wan_speeds has failed")
-        logger.info(f"\nMain, get_device_wan_speeds has failed")
-        print(f'Check the log file: {log_filename}. Exiting...')
-        sys.exit(1)
+    #status, devices_config_data = get_device_wan_speeds(devices_config_data, session, logger)
+    #if status == False: # Getting the interface wan speeds has failed.
+        #logger.critical(f"Main, get_device_wan_speeds has failed")
+        #logger.info(f"\nMain, get_device_wan_speeds has failed")
+        #print(f'Check the log file: {log_filename}. Exiting...')
+        #sys.exit(1)
 
    # print("devices_config_data is: ")
    # pprint.pprint(devices_config_data)
->>>>>>> 5226efb409bc2a49d4b9d5a2069146fd8af9a380
 
     config_type = 'devices'
     status, ng1_devices_df = convert_json_dict_to_dataframe(devices_config_data, config_type, logger)
@@ -1848,29 +1843,31 @@ def main():
         print(f'Check the log file: {log_filename}. Exiting...')
         sys.exit(1)
 
-<<<<<<< HEAD
     status, intersection_df = add_alert_profile_ids(intersection_df, alert_profile_ids_dict, logger)
     if status == False: # The add alert profile id number opertation failed. Exit.
         logger.critical(f"Main, add_alert_profile_ids has failed")
-=======
+
     # status, services_data = get_services(session, logger)
     if status == False: # The get services nG1 API call has failed. Exit.
         logger.critical(f"Main, get_services has failed")
         logger.info(f"\nMain, get_services has failed")
->>>>>>> 5226efb409bc2a49d4b9d5a2069146fd8af9a380
         print(f'Check the log file: {log_filename}. Exiting...')
         sys.exit(1)
 
     #print(f"\nThe updated intersection_df with alert profile IDs is:")
     #pprint.pprint(intersection_df)
 
-    status, intersection_df, valid_MIBII_network_service_names = create_network_service_configs(session, MIBII_network_services, intersection_df, logger)
+    status, intersection_df, valid_MIBII_network_service_names = create_network_service_configs(session, is_set_config_true, MIBII_network_services, intersection_df, logger)
     if status == False: # The create_network_service_configs operation has failed. Exit.
         logger.critical(f"Main, create_network_service_configs has failed")
         print(f'Check the log file: {log_filename}. Exiting...')
         sys.exit(1)
     if status == None: # There are no new WAN interfaces to add and none to modify. Exit.
         logger.info("Main, There are no new WAN interfaces to add and none to modify.")
+        add_or_modify = False # Set flag that there are no additions or modifications to make.
+    if  is_set_config_true == False: # No --set flag was specified at launch time.
+        logger.info("Main, Data collection completed.")
+        logger.info("Main, No modifications will be made as --set flag was not specified")
         add_or_modify = False # Set flag that there are no additions or modifications to make.
     else:
         add_or_modify = True # Set flag that there are some additions or modifications to make.

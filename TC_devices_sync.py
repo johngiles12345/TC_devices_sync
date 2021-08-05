@@ -1149,7 +1149,7 @@ def add_alert_profile_ids(intersection_df, alert_profiles_ids_dict, logger):
             return False, None
     return True, intersection_df
 
-def create_network_service_configs(session, is_set_config_true, MIBII_network_services, intersection_df, logger):
+def create_network_service_configs(session, is_set_config_true, MIBII_network_services, net_srv_add_candidates_filename, intersection_df, logger):
     """Take the information in the intersection_df and for each MIBII device, create a network service definition
     if it has a qualified service provider WAN interface.
     For each service that is created, get the service ID number fron nG1 API,
@@ -1159,6 +1159,7 @@ def create_network_service_configs(session, is_set_config_true, MIBII_network_se
     :session: An instance of the ApiSession class that holds all our API session params.
     :is_set_config_true: A boolean that tells the system to perform set operations if True.
     :MIBII_network_services: A list of network service names ending in '_MIB Polling'.
+    :net_srv_add_candidates_filename: The name of the csv file to write the network candidates for deletion into.
     :intersection_df: The dataframe that holds matching MIBII devices in nG1 to those listed in the solarwinds_filename.
     :logger: An instance of the logger object to write to in case of an error.
     :return: If successful, return status = True, the modified intersection_df and a list of valid_MIBII_network_service_names.
@@ -1168,7 +1169,7 @@ def create_network_service_configs(session, is_set_config_true, MIBII_network_se
     adds_or_mods_counter = 0 # We will return None and None if there are no additions or modifications to make.
     valid_MIBII_network_service_names = []
     try:
-        with open('net_srv_add_candidates.csv', 'w', newline='') as csvfile:
+        with open(net_srv_add_candidates_filename, 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
             writer.writerow(['network_service_name'])
             for index, row in intersection_df.iterrows():
@@ -1246,19 +1247,19 @@ def create_network_service_configs(session, is_set_config_true, MIBII_network_se
                     intersection_df.at[index, "netServiceID"] = net_srv_id
                     adds_or_mods_counter += 1
     except PermissionError as e:
-        logger.info('Opening file: net_srv_add_candidates.csv for writing has failed')
+        logger.info(f'Opening file: {net_srv_add_candidates_filename} for writing has failed')
         logger.error (f"Permission error is:\n{e}")
         print('Do you have the file open?')
         return False, None, None
     except Exception: # Handle other unexpected errors.
-        logger.exception(f'create_network_service_configs operation failed')
+        logger.exception('An exception has occurred during the create_network_service_configs operation')
         return False, None, None
     if adds_or_mods_counter == 0: # No new WAN interfaces to add and no mods to make.
         return None, None, None
     else:
         return True, intersection_df, valid_MIBII_network_service_names
 
-def delete_orphan_services(session, MIBII_network_services, valid_MIBII_network_service_names, logger):
+def delete_orphan_services(session, MIBII_network_services, valid_MIBII_network_service_names, net_srv_delete_candidates_filename, logger):
     """Take in the a list of MIBII_network_services for MIBII WAN interfaces as it
     was prior to adding new services and compare it to the valid_MIBII_network_service_names for MIBII
     interfaces as it is now after the additions. Remove any orphans from the configuration
@@ -1266,17 +1267,35 @@ def delete_orphan_services(session, MIBII_network_services, valid_MIBII_network_
     :session: An instance of the ApiSession class that holds all our API session params.
     :MIBII_network_services: A list of the pre-addition network services with names ending in '_MIB Polling'
     :intersection_df: The dataframe that holds matching MIBII devices in nG1 to those listed in the solarwinds_filename.
+    :net_srv_delete_candidates_filename: The filename of the csv file that lists all the network services that are orphaned.
     :logger: An instance of the logger object to write to in case of an error.
     :return: If successful, return status = True.
     Return False if there are any errors or exceptions.
     Return None if there are no orphan services found.
     """
-    MIBII_network_services_candiates_for_deletion = []
-    for MIBII_network_service in MIBII_network_services:
-        # print(f'\nvalid_MIBII_network_service_names are: \n{valid_MIBII_network_service_names}')
-        if MIBII_network_service not in valid_MIBII_network_service_names: # I found a candidate for deletion.
-            MIBII_network_services_candiates_for_deletion.append(MIBII_network_service)
-    print(f'\nMIBII_network_services_candiates_for_deletion are: {MIBII_network_services_candiates_for_deletion}')
+    delete_candidates_count = 0
+    try:
+        with open(net_srv_delete_candidates_filename, 'w', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(['Network Service Name to Delete'])
+            for MIBII_network_service in MIBII_network_services:
+                # print(f'\nvalid_MIBII_network_service_names are: \n{valid_MIBII_network_service_names}')
+                if MIBII_network_service not in valid_MIBII_network_service_names: # I found a candidate for deletion.
+                    writer.writerow([MIBII_network_service])
+                    delete_candidates_count += 1
+            if delete_candidates_count > 0:
+                logger.info(f'There were {delete_candidates_count} network service deletion candidates found')
+                logger.info(f'Reference output file: {net_srv_delete_candidates_filename}')
+            else:
+                logger.info(f'There were no network service deleteion candidates found')
+    except PermissionError as e:
+        logger.info(f'Opening file: {net_srv_delete_candidates_filename} for writing has failed')
+        logger.error (f"Permission error is:\n{e}")
+        print('Do you have the file open?')
+        return False, None, None
+    except Exception: # Handle other unexpected errors.
+        logger.exception('An exception has occurred during the create_network_service_configs operation')
+        return False, None, None
     return True
 
 
@@ -1675,6 +1694,10 @@ def main():
 
     # Hardcoding the name of the nG1 device interfaces "current" CSV file that holds the config data queried from the nG1 API.
     device_interfaces_config_current_filename = 'device_interfaces_config_current.csv' # This file will get overwritten by design if the same config_type is run again.
+    # Hardcoding the output filename that holds a list of names of the network services candidates for deletion.
+    net_srv_delete_candidates_filename = 'net_srv_delete_candidates.csv'
+    # Hardcoding the output filename that holds a list of names of the network services candidates for addition.
+    net_srv_add_candidates_filename = 'net_srv_add_candidates.csv'
     # Hardcoding the name of the "current" CSV file that holds the config data exported from Solarwinds.
     solarwinds_filename = 'solarwinds_config_current.csv' # This file will get overwritten by design if the same config_type is run again.
     # Hardcoding the name of the CSV file that holds the intersection of MIB II device interface configurations as matched by IP address.
@@ -1857,7 +1880,7 @@ def main():
     #print(f"\nThe updated intersection_df with alert profile IDs is:")
     #pprint.pprint(intersection_df)
 
-    status, intersection_df, valid_MIBII_network_service_names = create_network_service_configs(session, is_set_config_true, MIBII_network_services, intersection_df, logger)
+    status, intersection_df, valid_MIBII_network_service_names = create_network_service_configs(session, is_set_config_true, MIBII_network_services, net_srv_add_candidates_filename, intersection_df, logger)
     if status == False: # The create_network_service_configs operation has failed. Exit.
         logger.critical(f"Main, create_network_service_configs has failed")
         print(f'Check the log file: {log_filename}. Exiting...')
@@ -1876,7 +1899,7 @@ def main():
     #pprint.pprint(valid_MIBII_network_service_names)
 
     if MIBII_network_services != None and valid_MIBII_network_service_names != None:
-        status = delete_orphan_services(session, MIBII_network_services, valid_MIBII_network_service_names, logger)
+        status = delete_orphan_services(session, MIBII_network_services, valid_MIBII_network_service_names, net_srv_delete_candidates_filename, logger)
         if status == False: # The delete_orphan_services operation has failed. Exit.
             logger.critical(f"Main, delete_orphan_services operation has failed")
             print(f'Check the log file: {log_filename}. Exiting...')

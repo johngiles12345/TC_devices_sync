@@ -1,4 +1,4 @@
-#!/usr/bin/env python3.9
+#!/usr/bin/env python3.8
 
 import requests
 import json
@@ -29,10 +29,10 @@ The new network service is added to the correct domain in the dashboard hierarch
 
 """
 
-__version__ = "0.4"
+__version__ = "0.5"
 __status__ = "beta"
 __author__ = "John Giles"
-__date__ = "2021 August 5th"
+__date__ = "2021 August 9th"
 __env__= "Windows/Linux"
 __Language__ = "Python v3"
 
@@ -129,7 +129,7 @@ def flags_and_arguments(prog_version, logger):
         text = 'This program is used to configure nGeniusONE network services and dashboard domains.'
         # Initiate the parser with a description
         parser = argparse.ArgumentParser(description=text)
-        parser.add_argument('--set', '-s', action="store_true", help='set the nGeniusONE config to match the solarwindd_config_current.csv', dest='set', default=False)
+        parser.add_argument('--set', '-s', action="store_true", help='set the nGeniusONE config to match the solarwinds_config_current.csv', dest='set', default=False)
         parser.add_argument('--version', '-v', action="store_true", help="show program version and exit", dest='version', default=False)
         # Parse the arguments and create a result.
         args = parser.parse_args()
@@ -404,9 +404,11 @@ def get_devices(session, logger):
             for device in devices_data['deviceConfigurations']:
                 device_type = device['deviceType']
                 device_status = device['status']
+                device_name = device['deviceName']
+                #print('\n' + device_name)
                 if device_type == 'Router/Switch' and device_status == 'Active': # Only include Active MIBII devices.
                     device_server = device['nG1ServerName']
-                if device_status == 'Active' and device_type == 'Router/Switch': # Only include Active, MIBII devices.
+                if device_status == 'Active' and device_type == 'Router/Switch' and 'MIB-II DEVICE-' not in device_name: # Only include Active, MIBII devices that are not "MIB-II DEVICE-""
                     device['version'] = "N/A" # Fill in an empty field
                     device['wan_interfaces'] = [] # Initialize empty list to hold interfaces
                     filtered_devices_data['deviceConfigurations'].append(device)
@@ -414,12 +416,9 @@ def get_devices(session, logger):
             #pprint.pprint(filtered_devices_data, indent=4)
             # Check for empty devices_data dict:
             if len(devices_data['deviceConfigurations']) < 1:
-                    logger.error(f'No MIBII devices returned from get devices')
+                    logger.error(f'No Active MIBII devices found in the nG1 configuration')
                     #print("\nfiltered_devices_data is:")
                     #pprint.pprint(filtered_devices_data, indent=4)
-            # Check for empty devices_data dict:
-            if len(devices_data['deviceConfigurations']) < 1:
-                    logger.error(f'No Active MIBII devices returned from get devices')
                     return False, None
             else:
                  return True, filtered_devices_data
@@ -468,6 +467,7 @@ def get_device_wan_interfaces(devices_config_data, provider_list, session, logge
             wan_speed = str(device['wanSpeed'])
             wan_speed_units = convert_wan_speed_to_units(wan_speed, logger)
             if wan_speed_units == False:
+                logger.error(f"Conversion of WAN speed for device: {device_name} interface: {device['wanInterface']}")
                 return False, None
             else:
                 device['wanSpeedUnits'] = wan_speed_units
@@ -506,15 +506,16 @@ def get_interfaces(device_name, provider_list, session, logger):
             for interface in interface_data['interfaceConfigurations']:
                 #print('interface data is:')
                 #pprint.pprint(interface)
-                #if 'WAN' in interface['interfaceName']: # Only include WAN interfaces
-                if 'WAN' in interface['alias']: # JUST FOR TESTING
+                if 'WAN' in interface['interfaceName']: # Only include WAN interfaces
+                # if 'WAN' in interface['alias']: # JUST FOR TESTING
                     # Correct for bug in nG1 API
                     interface['interfaceLinkType'] = interface['portSpeed']
                     # Note: For production switch back from alias to interfaceName!!
                     interface['provider'] = ''
                     for provider in provider_list:
                         # print(f'provider is: {provider}')
-                        if provider.lower() in interface['alias'].lower(): #JUST FOR TESTING
+                        #if provider.lower() in interface['alias'].lower(): #JUST FOR TESTING
+                        if provider.lower() in interface['interfaceName'].lower():
                             interface['provider'] = provider
                             break
                     if interface['provider'] == None:
@@ -528,6 +529,10 @@ def get_interfaces(device_name, provider_list, session, logger):
             else:
                 #print(f"I did find one or more WAN interfaces for device: {device_name}")
                 return True, filtered_interface_data
+        elif get.status_code == 404:
+            logger.info(f'get interfaces for {device_name} return 404 not found')
+            logger.error(f'Response Code: {get.status_code}. Response Body: {get.text}.')
+            return True, None
         else:
             logger.error(f'get interfaces nG1 API request failed.')
             logger.error(f'Response Code: {get.status_code}. Response Body: {get.text}.')
@@ -586,21 +591,21 @@ def get_service_detail(session, service_name, logger):
         get = requests.get(url, headers=session.headers, verify=False, cookies=session.cookies)
         if get.status_code == 200:
             # success
-            logger.info(f'get service detail nG1 API request Successful')
+            logger.info(f'get service detail for: {service_name} nG1 API request Successful')
             service_data=json.loads(get.text)
             return True, service_data
         elif get.status_code == 404:
             # No network services were found
-            logger.info(f'get service nG1 API request Successful')
+            logger.info(f'get service for: {service_name} nG1 API request Successful')
             logger.info(f'No service: {service_name} was found in the nG1 config')
             return True, None
 
         else:
-            logger.error(f'get service nG1 API request failed.')
+            logger.error(f'get service for: {service_name} nG1 API request failed.')
             logger.error(f'Response Code: {get.status_code}. Response Body: {get.text}.')
             return False, None
     except Exception: # Handle other unexpected errors.
-        logger.exception(f'get service nG1 API request failed')
+        logger.exception(f'get service for: {service_name} nG1 API request failed')
         logger.exception(f'URL sent is: {url}')
         return False, None
 
@@ -829,7 +834,7 @@ def get_service_alert_profiles(session, logger):
             alert_profiles_data=json.loads(get.text)
             filtered_alert_profiles_data = {'AlarmProfiles':[]}
             for alert_profile in alert_profiles_data['AlarmProfiles']: #Only include NetworkService profiles
-                if alert_profile['ServiceType'] == 'NetworkService' and '_Link_BitRate-threshold' in alert_profile['Name']:
+                if alert_profile['ServiceType'] == 'NetworkService' and '_Link_BitRate' in alert_profile['Name']:
                     filtered_alert_profiles_data['AlarmProfiles'].append(alert_profile)
             return True, filtered_alert_profiles_data
         elif get.status_code == 404:
@@ -857,6 +862,8 @@ def convert_wan_speed_to_units(interface_speed, logger):
         wan_units = '32 Kbps'
     elif interface_speed == '56000':
         wan_units = '56 Kbps'
+    elif interface_speed == '100000':
+        wan_units = '100 Kbps'
     elif interface_speed == '128000':
         wan_units = '128 Kbps'
     elif interface_speed == '256000':
@@ -867,6 +874,8 @@ def convert_wan_speed_to_units(interface_speed, logger):
         wan_units = '384 Kbps'
     elif interface_speed == '400000':
         wan_units = '400 Kbps'
+    elif interface_speed == '500000':
+        wan_units = '500 Kbps'
     elif interface_speed == '512000':
         wan_units = '512 Kbps'
     elif interface_speed == '600000':
@@ -877,6 +886,8 @@ def convert_wan_speed_to_units(interface_speed, logger):
         wan_units = '896 Kbps'
     elif interface_speed == '1000000':
         wan_units = '1 Mbps'
+    elif interface_speed == '1024000':
+        wan_units = '1.024 Mbps'
     elif interface_speed == '1200000':
         wan_units = '1.2 Mbps'
     elif interface_speed == '1250000':
@@ -889,8 +900,20 @@ def convert_wan_speed_to_units(interface_speed, logger):
         wan_units = '1.5 Mbps'
     elif interface_speed == '1536000':
         wan_units = '1.536 Mbps'
+    elif interface_speed == '1544000':
+        wan_units = '1.544 Mbps'
+    elif interface_speed == '1800000':
+        wan_units = '1.8 Mbps'
     elif interface_speed == '2000000':
         wan_units = '2 Mbps'
+    elif interface_speed == '2400000':
+        wan_units = '2.4 Mbps'
+    elif interface_speed == '2500000':
+        wan_units = '2.5 Mbps'
+    elif interface_speed == '2600000':
+        wan_units = '2.6 Mbps'
+    elif interface_speed == '2800000':
+        wan_units = '2.6 Mbps'
     elif interface_speed == '3000000':
         wan_units = '3 Mbps'
     elif interface_speed == '3500000':
@@ -927,6 +950,8 @@ def convert_wan_speed_to_units(interface_speed, logger):
         wan_units = '14 Mbps'
     elif interface_speed == '15000000':
         wan_units = '15 Mbps'
+    elif interface_speed == '18000000':
+        wan_units = '18 Mbps'
     elif interface_speed == '18500000':
         wan_units = '18.5 Mbps'
     elif interface_speed == '19000000':
@@ -953,16 +978,24 @@ def convert_wan_speed_to_units(interface_speed, logger):
         wan_units = '60 Mbps'
     elif interface_speed == '80000000':
         wan_units = '80 Mbps'
+    elif interface_speed == '97000000':
+        wan_units = '97 Mbps'
     elif interface_speed == '100000000':
         wan_units = '100 Mbps'
     elif interface_speed == '150000000':
         wan_units = '150 Mbps'
+    elif interface_speed == '196000000':
+        wan_units = '196 Mbps'
     elif interface_speed == '200000000':
         wan_units = '200 Mbps'
     elif interface_speed == '250000000':
         wan_units = '250 Mbps'
     elif interface_speed == '300000000':
         wan_units = '300 Mbps'
+    elif interface_speed == '500000000':
+        wan_units = '500 Mbps'
+    elif interface_speed == '512000000':
+        wan_units = '512 Mbps'
     elif interface_speed == '950000000':
         wan_units = '950 Mbps'
     elif interface_speed == '1000000000':
@@ -992,137 +1025,171 @@ def create_alert_profile_ids_dict(alert_profiles_data, logger):
     Return status = False and None if there are any errors or exceptions.
     """
     alert_profiles_ids_dict = {}
+    #print(f'\nalert_profiles_data is: ')
+    #pprint.pprint(alert_profiles_data)
+    #print('\n')
+
     try:
         for alert_profile in alert_profiles_data['AlarmProfiles']:
-            if "0.032Mbps" in alert_profile['Name']:
-                alert_profiles_ids_dict['32000'] = alert_profile['Id']
-            elif "0.056Mbps" in alert_profile['Name']:
+            alert_profile_name = alert_profile['Name']
+            if alert_profile_name.startswith("0.032Mbps"):
+                  alert_profiles_ids_dict['32000'] = alert_profile['Id']
+            elif alert_profile_name.startswith("0.056Mbps"):
                 alert_profiles_ids_dict['56000'] = alert_profile['Id']
-            elif "128Kbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("100Kbps"):
+                alert_profiles_ids_dict['100000'] = alert_profile['Id']
+            elif alert_profile_name.startswith("128Kbps"):
                 alert_profiles_ids_dict['128000'] = alert_profile['Id']
-            elif "0.256Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("0.256Mbps"):
                 alert_profiles_ids_dict['256000'] = alert_profile['Id']
-            elif "0.3Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("0.3Mbps"):
                 alert_profiles_ids_dict['300000'] = alert_profile['Id']
-            elif "0.384Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("0.384Mbps"):
                 alert_profiles_ids_dict['384000'] = alert_profile['Id']
-            elif "0.4Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("0.4Mbps"):
                 alert_profiles_ids_dict['400000'] = alert_profile['Id']
-            elif "512Kbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("512Kbps"):
                 alert_profiles_ids_dict['512000'] = alert_profile['Id']
-            elif "0.6Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("500Kbps"):
+                alert_profiles_ids_dict['500000'] = alert_profile['Id']
+            elif alert_profile_name.startswith("0.6Mbps"):
                 alert_profiles_ids_dict['600000'] = alert_profile['Id']
-            elif "0.8Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("0.8Mbps"):
                 alert_profiles_ids_dict['800000'] = alert_profile['Id']
-            elif "0.896Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("0.896Mbps"):
                 alert_profiles_ids_dict['896000'] = alert_profile['Id']
-            elif "1Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("1.024Mbps"):
+                 alert_profiles_ids_dict['1024000'] = alert_profile['Id']
+            elif alert_profile_name.startswith("1Mbps"):
                  alert_profiles_ids_dict['1000000'] = alert_profile['Id']
-            elif "1.2Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("1.2Mbps"):
                 alert_profiles_ids_dict['1200000'] = alert_profile['Id']
-            elif "1.25Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("1.25Mbps"):
                 alert_profiles_ids_dict['1250000'] = alert_profile['Id']
-            elif "1.28Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("1.28Mbps"):
                 alert_profiles_ids_dict['1280000'] = alert_profile['Id']
-            elif "1.4Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("1.4Mbps"):
                 alert_profiles_ids_dict['1400000'] = alert_profile['Id']
-            elif "1.5Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("1.5Mbps"):
                 alert_profiles_ids_dict['1500000'] = alert_profile['Id']
-            elif "1536Kbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("1536Kbps"):
                 alert_profiles_ids_dict['1536000'] = alert_profile['Id']
-            elif "2Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("1544Kbps"):
+                alert_profiles_ids_dict['1544000'] = alert_profile['Id']
+            elif alert_profile_name.startswith("1.8Mbps"):
+                alert_profiles_ids_dict['1800000'] = alert_profile['Id']
+            elif alert_profile_name.startswith("2Mbps"):
                 alert_profiles_ids_dict['2000000'] = alert_profile['Id']
-            elif "3Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("2.4Mbps"):
+                alert_profiles_ids_dict['2400000'] = alert_profile['Id']
+            elif alert_profile_name.startswith("2.5Mbps"):
+                alert_profiles_ids_dict['2500000'] = alert_profile['Id']
+            elif alert_profile_name.startswith("2.6Mbps"):
+                alert_profiles_ids_dict['2600000'] = alert_profile['Id']
+            elif alert_profile_name.startswith("2.8Mbps"):
+                alert_profiles_ids_dict['2800000'] = alert_profile['Id']
+            elif alert_profile_name.startswith("3Mbps"):
                 alert_profiles_ids_dict['3000000'] = alert_profile['Id']
-            elif "3.5Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("3.5Mbps"):
                 alert_profiles_ids_dict['3500000'] = alert_profile['Id']
-            elif "4Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("4Mbps"):
                 alert_profiles_ids_dict['4000000'] = alert_profile['Id']
-            elif "4.5Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("4.5Mbps"):
                 alert_profiles_ids_dict['4500000'] = alert_profile['Id']
-            elif "4.6Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("4.6Mbps"):
                 alert_profiles_ids_dict['4600000'] = alert_profile['Id']
-            elif "5Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("5Mbps"):
                 alert_profiles_ids_dict['5000000'] = alert_profile['Id']
-            elif "5.89Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("5.89Mbps"):
                 alert_profiles_ids_dict['5890000'] = alert_profile['Id']
-            elif "6Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("6Mbps"):
                 alert_profiles_ids_dict['6000000'] = alert_profile['Id']
-            elif "6.5Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("6.5Mbps"):
                 alert_profiles_ids_dict['6500000'] = alert_profile['Id']
-            elif "7Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("7Mbps"):
                 alert_profiles_ids_dict['7000000'] = alert_profile['Id']
-            elif "8Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("8Mbps"):
                 alert_profiles_ids_dict['8000000'] = alert_profile['Id']
-            elif "9Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("9Mbps"):
                 alert_profiles_ids_dict['9000000'] = alert_profile['Id']
-            elif "9.6Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("9.6Mbps"):
                 alert_profiles_ids_dict['9600000'] = alert_profile['Id']
-            elif "10Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("10Mbps"):
                 alert_profiles_ids_dict['10000000'] = alert_profile['Id']
-            elif "10.5Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("10.5Mbps"):
                 alert_profiles_ids_dict['10500000'] = alert_profile['Id']
-            elif "12Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("12Mbps"):
                 alert_profiles_ids_dict['12000000'] = alert_profile['Id']
-            elif "14Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("14Mbps"):
                 alert_profiles_ids_dict['14000000'] = alert_profile['Id']
-            elif "15Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("15Mbps"):
                 alert_profiles_ids_dict['15000000'] = alert_profile['Id']
-            elif "19Mbps" in alert_profile['Name']:
-                alert_profiles_ids_dict['19000000'] = alert_profile['Id']
-            elif "18.5Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("18Mbps"):
+                alert_profiles_ids_dict['18000000'] = alert_profile['Id']
+            elif alert_profile_name.startswith("18.5Mbps"):
                 alert_profiles_ids_dict['18500000'] = alert_profile['Id']
-            elif "20Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("19Mbps"):
+                alert_profiles_ids_dict['19000000'] = alert_profile['Id']
+            elif alert_profile_name.startswith("20Mbps"):
                 alert_profiles_ids_dict['20000000'] = alert_profile['Id']
-            elif "23Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("23Mbps"):
                 alert_profiles_ids_dict['23000000'] = alert_profile['Id']
-            elif "30Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("30Mbps"):
                 alert_profiles_ids_dict['30000000'] = alert_profile['Id']
-            elif "35Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("35Mbps"):
                 alert_profiles_ids_dict['35000000'] = alert_profile['Id']
-            elif "40Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("40Mbps"):
                 alert_profiles_ids_dict['40000000'] = alert_profile['Id']
-            elif "45Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("45Mbps"):
                 alert_profiles_ids_dict['45000000'] = alert_profile['Id']
-            elif "47Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("47Mbps"):
                 alert_profiles_ids_dict['47000000'] = alert_profile['Id']
-            elif "49Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("49Mbps"):
                 alert_profiles_ids_dict['49000000'] = alert_profile['Id']
-            elif "50Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("50Mbps"):
                 alert_profiles_ids_dict['50000000'] = alert_profile['Id']
-            elif "60Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("60Mbps"):
                 alert_profiles_ids_dict['60000000'] = alert_profile['Id']
-            elif "80Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("80Mbps"):
                 alert_profiles_ids_dict['80000000'] = alert_profile['Id']
-            elif "100Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("97Mbps"):
+                alert_profiles_ids_dict['97000000'] = alert_profile['Id']
+            elif alert_profile_name.startswith("100Mbps"):
                 alert_profiles_ids_dict['100000000'] = alert_profile['Id']
-            elif "150Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("150Mbps"):
                 alert_profiles_ids_dict['150000000'] = alert_profile['Id']
-            elif "200Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("196Mbps"):
+                alert_profiles_ids_dict['196000000'] = alert_profile['Id']
+            elif alert_profile_name.startswith("200Mbps"):
                 alert_profiles_ids_dict['200000000'] = alert_profile['Id']
-            elif "250Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("250Mbps"):
                 alert_profiles_ids_dict['250000000'] = alert_profile['Id']
-            elif "300Mbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("300Mbps"):
                 alert_profiles_ids_dict['300000000'] = alert_profile['Id']
-            elif "950Mbps" in alert_profile['Name']:
-                alert_profiles_ids_dict['300000000'] = alert_profile['Id']
-            elif "1Gbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("512Mbps"):
+                alert_profiles_ids_dict['512000000'] = alert_profile['Id']
+            elif alert_profile_name.startswith("500Mbps"):
+                alert_profiles_ids_dict['500000000'] = alert_profile['Id']
+            elif alert_profile_name.startswith("950Mbps"):
+                alert_profiles_ids_dict['950000000'] = alert_profile['Id']
+            elif alert_profile_name.startswith("1Gbps"):
                 alert_profiles_ids_dict['1000000000'] = alert_profile['Id']
-            elif "2Gbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("2Gbps"):
                 alert_profiles_ids_dict['2000000000'] = alert_profile['Id']
-            elif "2.4Gbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("2.4Gbps"):
                 alert_profiles_ids_dict['2400000000'] = alert_profile['Id']
-            elif "2.5Gbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("2.5Gbps"):
                 alert_profiles_ids_dict['2500000000'] = alert_profile['Id']
-            elif "2.6Gbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("2.6Gbps"):
                 alert_profiles_ids_dict['2600000000'] = alert_profile['Id']
-            elif "2.8Gbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("2.8Gbps"):
                 alert_profiles_ids_dict['2800000000'] = alert_profile['Id']
-            elif "10Gbps" in alert_profile['Name']:
+            elif alert_profile_name.startswith("10Gbps"):
                 alert_profiles_ids_dict['10000000000'] = alert_profile['Id']
             else:
-                logger.error(f"No matching speed for alert_profile name {alert_profile['Name']}")
-                return False, None
+                logger.info(f"No matching speed for alert_profile name {alert_profile['Name']}")
+                continue
+
     except Exception: # Handle other unexpected errors.
         logger.exception(f'get alert profiles id to dict operation failed')
         return False, None
@@ -1139,10 +1206,15 @@ def add_alert_profile_ids(intersection_df, alert_profiles_ids_dict, logger):
     :return: If successful, return status = True and the updated intersection_df that includes alert id values.
     Return status = False and None if there are any errors or exceptions.
     """
+    #print("\nalert_profiles_ids_dict is:")
+    #pprint.pprint(alert_profiles_ids_dict)
     for index, row in intersection_df.iterrows():
         wan_speed = str((row['wanSpeed']))
+        #print(f'\nlooking for WAN speed {wan_speed}')
+
         if wan_speed in alert_profiles_ids_dict.keys():
             #print(f"{alert_profiles_ids_dict[wan_speed]=}")
+            #print(f'Found WAN speed {wan_speed} in the alert_profiles_ids_dict')
             intersection_df.at[index, "alertProfileID"] = str(alert_profiles_ids_dict[wan_speed])
         else:
             logger.error(f"The wan_speed {wan_speed} was not found in the alert_profiles_ids_dict")
@@ -1151,27 +1223,34 @@ def add_alert_profile_ids(intersection_df, alert_profiles_ids_dict, logger):
 
 def create_network_service_configs(session, is_set_config_true, MIBII_network_services, net_srv_add_candidates_filename, intersection_df, logger):
     """Take the information in the intersection_df and for each MIBII device, create a network service definition
-    if it has a qualified service provider WAN interface.
+    if it has a qualified service provider WAN interface. Then call the function to create each network service using the nG1 API.
     For each service that is created, get the service ID number fron nG1 API,
     then add the network service name and id number to new columns in the intersection_df.
+    Add any valid network service candidates for adding to a csv file that we can use for troubleshooting.
     We will need those ID numbers to place them into the dashboard later.
-    Then call the function to create each network service using the nG1 API.
+    Add any new network service names that don't already exist to list new_MIBII_network_service_names.
+    We will use new_MIBII_network_service_names to determine which new network services to add to the domain tree.
     :session: An instance of the ApiSession class that holds all our API session params.
     :is_set_config_true: A boolean that tells the system to perform set operations if True.
     :MIBII_network_services: A list of network service names ending in '_MIB Polling'.
     :net_srv_add_candidates_filename: The name of the csv file to write the network candidates for deletion into.
     :intersection_df: The dataframe that holds matching MIBII devices in nG1 to those listed in the solarwinds_filename.
     :logger: An instance of the logger object to write to in case of an error.
-    :return: If successful, return status = True, the modified intersection_df and a list of valid_MIBII_network_service_names.
-    Return False None and None if there are any errors or exceptions.
-    Return None, None and None if there are no new WAN interfaces to add or any modifications to make.
+    :return: If successful, return status = True, the modified intersection_df, a list of valid_MIBII_network_service_names
+    and a list of new_MIBII_network_service_names.
+    Return False, None, None and None if there are any errors or exceptions.
+    Return None, the modified intersection_df, a list of valid_MIBII_network_service_names and new_MIBII_network_service_names
+    if there are no new WAN interfaces to add or any modifications to make.
     """
-    adds_or_mods_counter = 0 # We will return None and None if there are no additions or modifications to make.
+    adds_or_mods_counter = 0 # We will return a status of None if there are no additions or modifications to make.
+    # Even if there are no modifications to make, we will return the data so that candidates for deletion can be performaned.
     valid_MIBII_network_service_names = []
+    # If there are new network services to add, put them into a list for us to use when creating domians.
+    new_MIBII_network_service_names = []
     try:
         with open(net_srv_add_candidates_filename, 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
-            writer.writerow(['network_service_name'])
+            writer.writerow(['Network Service Name to add'])
             for index, row in intersection_df.iterrows():
                 site = row['Site']
                 provider = row['wanProvider']
@@ -1219,16 +1298,19 @@ def create_network_service_configs(session, is_set_config_true, MIBII_network_se
                         if existing_network_service_name == network_service_name:
                             network_service_exists = True
                             break
-
                 # This network service does not exist.
                 # Add it to the net_srv_add_candidates.csv file
-                writer.writerow([network_service_name])
+                if network_service_exists != True:
+                    writer.writerow([network_service_name])
+                    new_MIBII_network_service_names.append(network_service_name)
+                    adds_or_mods_counter += 1
+
                 # Create the new network service.
                 if is_set_config_true == True: # Perform the set operations
                     status = create_service(session, svcs_dict, network_service_name, logger)
                     if status == False:
                         logger.error(f'create_service: {network_service_name} has failed')
-                        return False, None, None
+                        return False, None, None, None
                     #time.sleep(1) # Give it a second before we request the ID number.
                     # We need to know the id number that was assigned to this new network service, so we get_service_detail on it.
                     # We store this id number in the intersection_df so that later we can add it as a member to to the region domain.
@@ -1236,34 +1318,35 @@ def create_network_service_configs(session, is_set_config_true, MIBII_network_se
                     if status == False:
                         logger.error(f'create_service: {network_service_name} has failed')
                         logger.error(f'call to get_service_detail has failed')
-                        return False, None, None
+                        return False, None, None, None
                     elif net_srv_config_data == None:
                         logger.error(f'create_service: {network_service_name} has failed')
                         logger.error(f'call to get_service_detail returned an empty net_srv_config_data')
-                        return False, None, None
+                        return False, None, None, None
                     #print('\nnet_srv_config_data is:')
                     #print(f'{net_srv_config_data}')
                     net_srv_id = net_srv_config_data['serviceDetail'][0]['id']
                     intersection_df.at[index, "netServiceID"] = net_srv_id
-                    adds_or_mods_counter += 1
+        csvfile.close()
+        logger.info(f'Candidates for new network services written to file: {net_srv_add_candidates_filename}')
     except PermissionError as e:
         logger.info(f'Opening file: {net_srv_add_candidates_filename} for writing has failed')
         logger.error (f"Permission error is:\n{e}")
         print('Do you have the file open?')
-        return False, None, None
+        return False, None, None, None
     except Exception: # Handle other unexpected errors.
         logger.exception('An exception has occurred during the create_network_service_configs operation')
-        return False, None, None
+        return False, None, None, None
     if adds_or_mods_counter == 0: # No new WAN interfaces to add and no mods to make.
-        return None, None, None
+        return None, intersection_df, valid_MIBII_network_service_names, new_MIBII_network_service_names
     else:
-        return True, intersection_df, valid_MIBII_network_service_names
+        return True, intersection_df, valid_MIBII_network_service_names, new_MIBII_network_service_names
 
 def delete_orphan_services(session, MIBII_network_services, valid_MIBII_network_service_names, net_srv_delete_candidates_filename, logger):
     """Take in the a list of MIBII_network_services for MIBII WAN interfaces as it
     was prior to adding new services and compare it to the valid_MIBII_network_service_names for MIBII
-    interfaces as it is now after the additions. Remove any orphans from the configuration
-    so that we can keep the configuration up to date.
+    interfaces as it is now after the additions. Write the list of candidates for deletion to a CSV file.
+    Remove any orphans from the configuration so that we can keep the configuration up to date.
     :session: An instance of the ApiSession class that holds all our API session params.
     :MIBII_network_services: A list of the pre-addition network services with names ending in '_MIB Polling'
     :intersection_df: The dataframe that holds matching MIBII devices in nG1 to those listed in the solarwinds_filename.
@@ -1271,33 +1354,32 @@ def delete_orphan_services(session, MIBII_network_services, valid_MIBII_network_
     :logger: An instance of the logger object to write to in case of an error.
     :return: If successful, return status = True.
     Return False if there are any errors or exceptions.
-    Return None if there are no orphan services found.
     """
     delete_candidates_count = 0
     try:
         with open(net_srv_delete_candidates_filename, 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
-            writer.writerow(['Network Service Name to Delete'])
+            writer.writerow(['Network Service Names to delete'])
             for MIBII_network_service in MIBII_network_services:
                 # print(f'\nvalid_MIBII_network_service_names are: \n{valid_MIBII_network_service_names}')
                 if MIBII_network_service not in valid_MIBII_network_service_names: # I found a candidate for deletion.
                     writer.writerow([MIBII_network_service])
                     delete_candidates_count += 1
             if delete_candidates_count > 0:
-                logger.info(f'There were {delete_candidates_count} network service deletion candidates found')
-                logger.info(f'Reference output file: {net_srv_delete_candidates_filename}')
+                logger.info(f'{delete_candidates_count} network service deletion candidates found')
+                logger.info(f'Candidates for network service deletion written to file:: {net_srv_delete_candidates_filename}')
             else:
                 logger.info(f'There were no network service deleteion candidates found')
+        csvfile.close()
     except PermissionError as e:
         logger.info(f'Opening file: {net_srv_delete_candidates_filename} for writing has failed')
         logger.error (f"Permission error is:\n{e}")
         print('Do you have the file open?')
-        return False, None, None
+        return False
     except Exception: # Handle other unexpected errors.
         logger.exception('An exception has occurred during the create_network_service_configs operation')
-        return False, None, None
+        return False
     return True
-
 
 def create_service(session, config_data, service_name, logger):
     """Use the nG1 API to create a network service.
@@ -1544,18 +1626,27 @@ def modify_domain(session, config_data, domain_name, logger):
         return False
 
 
-def create_domains(session, intersection_df, wan_domain_id, logger):
+def create_domains(session, intersection_df, wan_domain_id, new_MIBII_network_service_names, logger):
     """Use the nG1 API to create the domain tree for any new network services that were created.
     There are three domain levels under Enterprise; WAN, organization and region. The region
     domain contains the new or modified network services as members.
     :session: An instance of the ApiSession class that holds all our API session params.
     :intersection_df: A Pandas dataframe that holds the info needed to build up the domain configuration.
     :wan_domain_id: The id number of the "WAN" domain so we can reference that as a parentID number.
+    :new_MIBII_network_service_names: A list of new network service names that don't already exist.
     :logger: An instance of the logger class to write to in case of an error.
     :return: If successful, return True. Return False if there are any errors or exceptions.
     """
     try:
-        for index, row in intersection_df.iterrows():
+        NewServicesDF = pd.DataFrame() # Initialize an empty dataframe to append new network service data in.
+        for new_MIBII_network_service_name in new_MIBII_network_service_names: # Loopt through the new service names list.
+            tempDF = intersection_df.loc[intersection_df.netServiceName == new_MIBII_network_service_name]
+            #print('\ntempDF data is:')
+            #print(tempDF)
+            NewServicesDF = pd.concat([NewServicesDF,tempDF])
+        # print('\nNewServicesDF data is:')
+        # print(NewServicesDF)
+        for index, row in NewServicesDF.iterrows():
             corpscada_type = row['CorpSCADA_Type']
             if corpscada_type == 'Corporate':
                 corpscada_type = 'Corp' # This corpscada_type gets abbreviated.
@@ -1634,8 +1725,8 @@ def create_domains(session, intersection_df, wan_domain_id, logger):
             # Check to see if the region domain already exists.
             region_domain_exists = False
             status, region_domain_detail_data = get_domain_detail(session, domain_name, logger)
-            #print('\nregion_domain_detail_data is:')
-            #pprint.pprint(region_domain_detail_data)
+            # print('\nregion_domain_detail_data is:')
+            # pprint.pprint(region_domain_detail_data)
             if status == True and region_domain_detail_data != None: # The domain already exists.
                 logger.info(f'Region domain: {domain_name} already exists')
                 # Set the region domain ID number to that of the existing region domain.
@@ -1651,21 +1742,26 @@ def create_domains(session, intersection_df, wan_domain_id, logger):
                     return False
             else: # Check to see if this new network service is already a member of the region domain.
                 domain_member_exists = False
-                domainMembers_list = region_domain_detail_data['domainDetail'][0]['domainMembers']
-                for domain_member in domainMembers_list:
-                    if domain_member['serviceName'] == network_service_name:
-                        domain_member_exists = True
+                # Check to see if there are no domainMembers at all for this region.
+                if 'domainMembers' not in region_domain_detail_data['domainDetail'][0]:
+                    region_domain_detail_data['domainDetail'][0]['domainMembers'] = [] # Set domainMembers to an empty list of dicts.
+                    domain_member_exists = False
+                else: # Interate through the domainMembers and see if this serviceName is already there.
+                    domainMembers_list = region_domain_detail_data['domainDetail'][0]['domainMembers']
+                    for domain_member in domainMembers_list:
+                        if domain_member['serviceName'] == network_service_name:
+                            domain_member_exists = True
                 if domain_member_exists == False: # We need to add the new network service as a region domain member.
-                    logger.info(f'New network service: {network_service_name} is not yet a member of region domain: {domain_name}, adding member...')
+                    logger.info(f'network service: {network_service_name} is not yet a member of region domain: {domain_name}, adding member...')
                     region_domain_detail_data['domainDetail'][0]['domainMembers'].append(domain_member_dict.copy())
-                    print('\nregion_domain_detail_data is:')
-                    pprint.pprint(region_domain_detail_data)
+                    # print('\nregion_domain_detail_data is:')
+                    # pprint.pprint(region_domain_detail_data)
                     status = modify_domain(session, region_domain_detail_data, domain_name, logger)
                     if status == False: # the modify_domain operation has failed Exit.
                         logger.error(f'Modify domain {domain_name} has failed')
                         return False
                 else:
-                    logger.info(f'New network service: {network_service_name} is already a member of region domain: {domain_name}, no modification made')
+                    logger.info(f'network service: {network_service_name} is already a member of region domain: {domain_name}, no modification made')
 
         return True
     except Exception: # Handle other unexpected errors.
@@ -1763,15 +1859,14 @@ def main():
     elif devices_config_data == {'deviceConfigurations': []}:
         logger.info(f"Main, get_device_wan_interfaces successful")
         logger.info(f"Main, No WAN interfaces were found for MIBII devices")
-        print(f'Check the log file: {log_filename}. Exiting...')
-        sys.exit(1)
+        print('Nothing to do. Exiting...')
+        sys.exit(0)
 
     #print("\nMain2: devices_config_data is: ")
     #pprint.pprint(devices_config_data)
 
     # print("devices_config_data is: ")
     # pprint.pprint(devices_config_data)
-
 
     # For each MIB II device in nG1, get the WAN speed of the only Active WAN interface.
     # Add the WAN speed as an attribute to the nG1 devices_config_data.
@@ -1869,34 +1964,28 @@ def main():
     status, intersection_df = add_alert_profile_ids(intersection_df, alert_profile_ids_dict, logger)
     if status == False: # The add alert profile id number opertation failed. Exit.
         logger.critical(f"Main, add_alert_profile_ids has failed")
-
-    # status, services_data = get_services(session, logger)
-    if status == False: # The get services nG1 API call has failed. Exit.
-        logger.critical(f"Main, get_services has failed")
-        logger.info(f"\nMain, get_services has failed")
         print(f'Check the log file: {log_filename}. Exiting...')
         sys.exit(1)
 
     #print(f"\nThe updated intersection_df with alert profile IDs is:")
     #pprint.pprint(intersection_df)
 
-    status, intersection_df, valid_MIBII_network_service_names = create_network_service_configs(session, is_set_config_true, MIBII_network_services, net_srv_add_candidates_filename, intersection_df, logger)
+    status, intersection_df, valid_MIBII_network_service_names, new_MIBII_network_service_names = create_network_service_configs(session, is_set_config_true, MIBII_network_services, net_srv_add_candidates_filename, intersection_df, logger)
     if status == False: # The create_network_service_configs operation has failed. Exit.
         logger.critical(f"Main, create_network_service_configs has failed")
         print(f'Check the log file: {log_filename}. Exiting...')
         sys.exit(1)
-    if status == None: # There are no new WAN interfaces to add and none to modify. Exit.
+    if status == None: # There are no new WAN interfaces to add and none to modify.
         logger.info("Main, There are no new WAN interfaces to add and none to modify.")
-        add_or_modify = False # Set flag that there are no additions or modifications to make.
-    if  is_set_config_true == False: # No --set flag was specified at launch time.
-        logger.info("Main, Data collection completed.")
-        logger.info("Main, No modifications will be made as --set flag was not specified")
         add_or_modify = False # Set flag that there are no additions or modifications to make.
     else:
         add_or_modify = True # Set flag that there are some additions or modifications to make.
 
-    #print('\nvalid_MIBII_network_service_names isare: ')
+    #print('\nvalid_MIBII_network_service_names are: ')
     #pprint.pprint(valid_MIBII_network_service_names)
+
+    #print('\nMIBII_network_services are: ')
+    #pprint.pprint(MIBII_network_services)
 
     if MIBII_network_services != None and valid_MIBII_network_service_names != None:
         status = delete_orphan_services(session, MIBII_network_services, valid_MIBII_network_service_names, net_srv_delete_candidates_filename, logger)
@@ -1905,7 +1994,13 @@ def main():
             print(f'Check the log file: {log_filename}. Exiting...')
             sys.exit(1)
 
-    if add_or_modify == True: # Only do domin mods if there are additions of MIBII network services.
+    if  is_set_config_true == False: # No --set flag was specified at launch time.
+        logger.info("Main, Data collection completed.")
+        logger.info("Main, No modifications will be made as --set flag was not specified")
+
+    # Only do domin mods if there are additions of MIBII network services and
+    # the user specified the --set flag.
+    if add_or_modify == True and is_set_config_true == True: #
         status, current_domains = get_domains(session, logger)
         if status == False: # The get_current_domains has failed. Exit.
             logger.critical(f"Main, get_domains has failed")
@@ -1923,7 +2018,7 @@ def main():
 
         #print(f'\nThe WAN domain id is: {wan_domain_id}')
 
-        status = create_domains(session, intersection_df, wan_domain_id, logger)
+        status = create_domains(session, intersection_df, wan_domain_id, new_MIBII_network_service_names, logger)
         if status == False: # The create_domains operation has failed. Exit.
             logger.critical(f"Main, create_domains has failed")
             print(f'Check the log file: {log_filename}. Exiting...')

@@ -380,8 +380,6 @@ def get_provider_list(provider_list_filename, logger):
         logger.error('An exception has occurred in get_provider_list')
         return False, None
 
-
-
 def get_devices(session, logger):
     """Use the nG1 API to get the current device configuration for MIBII devices in the system.
     :session: An instance of the ApiSession class that holds all our API session params.
@@ -457,7 +455,18 @@ def get_device_wan_interfaces(devices_config_data, provider_list, session, logge
                 continue
             for interface in interfaces_data['interfaceConfigurations']:
                 interface_number = str(interface['interfaceNumber'])
-                device['wan_interfaces'].append(interface)
+                interface_name_to_modify = interface['interfaceName']
+                #JUST for TESTING
+                #interface_name_to_modify = interface['alias']
+                status, modified_interface_name = modify_interface_name(interface_name_to_modify, logger)
+                if status == False: # We were unable to modify the interface_name, use the original name
+                    logger.error(f"Unable to modify MIBII device: {device_name} interface name: {interface_name_to_modify}")
+                    device['wan_interfaces'].append(interface)
+                else: # The modification was successful, use the modified interface name
+                    print(f"{modified_interface_name=}")
+                    device['wan_interfaces'].append(interface)
+                    device['wan_interfaces'][0]['interfaceName'] = modified_interface_name
+                break # We want to only process the first WAN interface.
 
             device['wanInterface'] = device['wan_interfaces'][0]['interfaceName']
             device['wanSpeed'] = device['wan_interfaces'][0]['interfaceSpeed']
@@ -480,6 +489,70 @@ def get_device_wan_interfaces(devices_config_data, provider_list, session, logge
     except Exception: # Handle other unexpected errors.
         logger.exception(f'get_device_wan_interfaces failed')
         return False, None
+
+def modify_interface_name(interface_name, logger):
+    """The name of the WAN interfaces as read from nG1 API need to be modified to
+    match the desired name structure to be used as part of the network service name.
+    :interface_name: A string that is the actual name of MIBII device's WAN interface.
+    :logger: An instance of the logger class to write to in case of an error.
+    :return: If successful, return status = True and the modified interface name.
+    Return status = False and None if there are any errors or exceptions.
+    """
+    if 'GigabitEthernet' in interface_name:
+        interface_name = 'Gi' + interface_name.partition('GigabitEthernet')[2]
+    elif 'gigabitEthernet' in interface_name:
+        interface_name = 'Gi' + interface_name.partition('gigabitEthernet')[2]
+    elif 'gigabitethernet' in interface_name:
+        interface_name = 'Gi' + interface_name.partition('gigabitethernet')[2]
+    elif 'FastEthernet' in interface_name:
+        interface_name = 'Fa' + interface_name.partition('FastEthernet')[2]
+    elif 'fastEthernet' in interface_name:
+        interface_name = 'Fa' + interface_name.partition('fastEthernet')[2]
+    elif 'fastethernet' in interface_name:
+        interface_name = 'Fa' + interface_name.partition('fastethernet')[2]
+    elif 'Tu1' in interface_name and 'Tu2' not in interface_name:
+        interface_name = 'Tu1' + interface_name.partition('Tu1')[2]
+    elif 'Tu2' in interface_name and 'Tu1' not in interface_name:
+        interface_name = 'Tu2' + interface_name.partition('Tu2')[2]
+    elif 'Tun1' in interface_name and 'Tun2' not in interface_name:
+        interface_name = 'Tu1' + interface_name.partition('Tun1')[2]
+    elif 'Tun2' in interface_name and 'Tun1' not in interface_name:
+        interface_name = 'Tu2' + interface_name.partition('Tun2')[2]
+    elif 'Tu1,Tu2' in interface_name in interface_name:
+        interface_name = 'Tu1,Tu2' + interface_name.partition('Tu1,Tu2')[2]
+    elif 'Tun1,Tun2' in interface_name in interface_name:
+        interface_name = 'Tu1,Tu2' + interface_name.partition('Tun1,Tun2')[2]
+    elif 'Tunnel' in interface_name:
+        interface_name = 'Tu' + interface_name.partition('Tunnel')[2]
+    elif 'tunnel' in interface_name:
+        interface_name = 'Tu' + interface_name.partition('tunnel')[2]
+    elif 'Serial' in interface_name:
+        interface_name = 'Se' + interface_name.partition('Serial')[2]
+    elif 'serial' in interface_name:
+        interface_name = 'Se' + interface_name.partition('serial')[2]
+    elif 's0' in interface_name:
+        interface_name = 'Se' + interface_name.partition('s0')[2]
+    elif 's1' in interface_name:
+        intinterface_name = 'Se' + interface_name.partition('s1')[2]
+    elif 's2' in interface_name:
+        interface_name = 'Se' + interface_name.partition('s2')[2]
+    elif 's3' in interface_name:
+        iinterface_name = 'Se' + interface_name.partition('s3')[2]
+    elif 'TEN' in interface_name:
+        interface_name = 'Te' + interface_name.partition('TEN')[2]
+    elif 'Ten' in interface_name:
+        interface_name = 'Te' + interface_name.partition('Ten')[2]
+    elif 'ten' in interface_name:
+        interface_name = 'Te' + interface_name.partition('ten')[2]
+    elif 'Multilink' in interface_name:
+        interface_name = 'Mu' + interface_name.partition('Multilink')[2]
+    elif 'multilink' in interface_name:
+        interface_name = 'Mu' + interface_name.partition('multilink')[2]
+    else:
+        logger.error(f'No match for interface type in interface name: {interface_name}')
+        return False, None
+
+    return True, interface_name
 
 def get_interfaces(device_name, provider_list, session, logger):
     """Use the nG1 API to get the current interface configuration for each MIBII device in the system.
@@ -507,7 +580,7 @@ def get_interfaces(device_name, provider_list, session, logger):
                 #print('interface data is:')
                 #pprint.pprint(interface)
                 if 'WAN' in interface['interfaceName']: # Only include WAN interfaces
-                # if 'WAN' in interface['alias']: # JUST FOR TESTING
+                #if 'WAN' in interface['alias']: # JUST FOR TESTING
                     # Correct for bug in nG1 API
                     interface['interfaceLinkType'] = interface['portSpeed']
                     # Note: For production switch back from alias to interfaceName!!
@@ -1242,7 +1315,8 @@ def create_network_service_configs(session, is_set_config_true, MIBII_network_se
     Return None, the modified intersection_df, a list of valid_MIBII_network_service_names and new_MIBII_network_service_names
     if there are no new WAN interfaces to add or any modifications to make.
     """
-    adds_or_mods_counter = 0 # We will return a status of None if there are no additions or modifications to make.
+    # We will return a status of None if there are no additions or modifications to make.
+    adds_or_mods_counter = 0
     # Even if there are no modifications to make, we will return the data so that candidates for deletion can be performaned.
     valid_MIBII_network_service_names = []
     # If there are new network services to add, put them into a list for us to use when creating domians.
@@ -1255,6 +1329,8 @@ def create_network_service_configs(session, is_set_config_true, MIBII_network_se
                 site = row['Site']
                 provider = row['wanProvider']
                 corpscada_type = row['CorpSCADA_Type']
+                if corpscada_type == "corp_and_scada":
+                    corpscada_type = "Corp/SCADA"
                 device_name = row['deviceName']
                 device_ip_address = row['deviceIPAddress']
                 wan_interface = row['wanInterface']
@@ -1262,7 +1338,7 @@ def create_network_service_configs(session, is_set_config_true, MIBII_network_se
                 alert_profile_id = int(row['alertProfileID'])
                 interface_number = int(row['interfaceNumber'])
                 interface_alias = row['interfaceAlias']
-                network_service_name = site + '_' + provider + ' MPLS-' + corpscada_type + ' (' + device_name + ' if: ' + wan_interface + '-' + wan_speed_units + ')_MIB Polling'
+                network_service_name = site + '_' + provider + ' MPLS-' + corpscada_type + ' WAN (' + device_name + ' if: ' + wan_interface + '-' + wan_speed_units + ')_MIB Polling'
                 intersection_df.at[index, "netServiceName"] = network_service_name
 
                 svcs_dict={}
@@ -1311,7 +1387,7 @@ def create_network_service_configs(session, is_set_config_true, MIBII_network_se
                     if status == False:
                         logger.error(f'create_service: {network_service_name} has failed')
                         return False, None, None, None
-                    #time.sleep(1) # Give it a second before we request the ID number.
+                    time.sleep(1) # Give it a second before we request the ID number.
                     # We need to know the id number that was assigned to this new network service, so we get_service_detail on it.
                     # We store this id number in the intersection_df so that later we can add it as a member to to the region domain.
                     status, net_srv_config_data = get_service_detail(session, network_service_name, logger)
@@ -1327,8 +1403,12 @@ def create_network_service_configs(session, is_set_config_true, MIBII_network_se
                     #print(f'{net_srv_config_data}')
                     net_srv_id = net_srv_config_data['serviceDetail'][0]['id']
                     intersection_df.at[index, "netServiceID"] = net_srv_id
+        if adds_or_mods_counter > 0:
+            logger.info(f'{adds_or_mods_counter} new network service add candidates found')
+            logger.info(f'Candidates for new network services written to file: {net_srv_add_candidates_filename}')
+        else:
+            logger.info(f'There were no new network service add candidates found')
         csvfile.close()
-        logger.info(f'Candidates for new network services written to file: {net_srv_add_candidates_filename}')
     except PermissionError as e:
         logger.info(f'Opening file: {net_srv_add_candidates_filename} for writing has failed')
         logger.error (f"Permission error is:\n{e}")
@@ -1342,12 +1422,13 @@ def create_network_service_configs(session, is_set_config_true, MIBII_network_se
     else:
         return True, intersection_df, valid_MIBII_network_service_names, new_MIBII_network_service_names
 
-def delete_orphan_services(session, MIBII_network_services, valid_MIBII_network_service_names, net_srv_delete_candidates_filename, logger):
+def delete_orphan_services(session, is_set_config_true, MIBII_network_services, valid_MIBII_network_service_names, net_srv_delete_candidates_filename, logger):
     """Take in the a list of MIBII_network_services for MIBII WAN interfaces as it
     was prior to adding new services and compare it to the valid_MIBII_network_service_names for MIBII
     interfaces as it is now after the additions. Write the list of candidates for deletion to a CSV file.
     Remove any orphans from the configuration so that we can keep the configuration up to date.
     :session: An instance of the ApiSession class that holds all our API session params.
+    :is_set_config_true: A boolean that tells the system to perform set operations if True.
     :MIBII_network_services: A list of the pre-addition network services with names ending in '_MIB Polling'
     :intersection_df: The dataframe that holds matching MIBII devices in nG1 to those listed in the solarwinds_filename.
     :net_srv_delete_candidates_filename: The filename of the csv file that lists all the network services that are orphaned.
@@ -1356,6 +1437,7 @@ def delete_orphan_services(session, MIBII_network_services, valid_MIBII_network_
     Return False if there are any errors or exceptions.
     """
     delete_candidates_count = 0
+    MIBII_network_service_names_to_delete = []
     try:
         with open(net_srv_delete_candidates_filename, 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
@@ -1364,12 +1446,21 @@ def delete_orphan_services(session, MIBII_network_services, valid_MIBII_network_
                 # print(f'\nvalid_MIBII_network_service_names are: \n{valid_MIBII_network_service_names}')
                 if MIBII_network_service not in valid_MIBII_network_service_names: # I found a candidate for deletion.
                     writer.writerow([MIBII_network_service])
+                    MIBII_network_service_names_to_delete.append(MIBII_network_service)
                     delete_candidates_count += 1
             if delete_candidates_count > 0:
                 logger.info(f'{delete_candidates_count} network service deletion candidates found')
                 logger.info(f'Candidates for network service deletion written to file:: {net_srv_delete_candidates_filename}')
+                #if is_set_config_true == True:
+                    #for MIBII_network_service_name_to_delete in MIBII_network_service_names_to_delete:
+                        #status = delete_service(session, MIBII_network_service_name_to_delete, logger)
+                        #if status == False:
+                            #logger.error(f'Delete service: {MIBII_network_service_name_to_delete} operation failed')
+                            #return False
+                #else:
+                    #logger.info('No network service candidates for deletion were removed as the --set flag was not specified')
             else:
-                logger.info(f'There were no network service deleteion candidates found')
+                logger.info(f'There were no network service deletion candidates found')
         csvfile.close()
     except PermissionError as e:
         logger.info(f'Opening file: {net_srv_delete_candidates_filename} for writing has failed')
@@ -1415,6 +1506,31 @@ def create_service(session, config_data, service_name, logger):
         logger.exception(f'URL sent is: {url}')
         return False
 
+def delete_service(session, service_name, logger):
+    """Use the nG1 API to delete a network service.
+    :session: An instance of the ApiSession class that holds all our API session params.
+    :service_name: The name of the service to delete.
+    :logger: An instance of the logger class to write to in case of an error.
+    :return: If successful, return True. Return False if there are any errors or exceptions.
+    """
+    uri = "/ng1api/ncm/services"
+    url = session.ng1_host + uri
+    try:
+        # perform the HTTPS DELETE operation
+        resp = requests.delete(url, headers=session.headers, verify=False, cookies=session.cookies)
+
+        if resp.status_code == 200: # success
+            logger.info(f'delete service: {service_name} nG1 API DELETE Successful')
+            return True
+        else: # Delete Service has failed.
+            logger.error(f'delete service: {service_name} nG1 API request failed')
+            logger.error(f'Response Code: {resp.status_code}. Response Body: {resp.text}.')
+            return False
+    except Exception: # Handle other unexpected errors.
+        logger.exception(f'delete service: {service_name} nG1 API request failed')
+        logger.exception(f'URL sent is: {url}')
+        return False
+
 def update_service(session, config_data, service_name, logger):
     """Use the nG1 API to update a network service.
     :session: An instance of the ApiSession class that holds all our API session params.
@@ -1443,7 +1559,6 @@ def update_service(session, config_data, service_name, logger):
         logger.exception(f'update service: {service_name} nG1 API request failed')
         logger.exception(f'URL sent is: {url}')
         return False
-
 
 def get_domains(session, logger):
     """Use the nG1 API to get the current domains.
@@ -1988,7 +2103,7 @@ def main():
     #pprint.pprint(MIBII_network_services)
 
     if MIBII_network_services != None and valid_MIBII_network_service_names != None:
-        status = delete_orphan_services(session, MIBII_network_services, valid_MIBII_network_service_names, net_srv_delete_candidates_filename, logger)
+        status = delete_orphan_services(session, is_set_config_true, MIBII_network_services, valid_MIBII_network_service_names, net_srv_delete_candidates_filename, logger)
         if status == False: # The delete_orphan_services operation has failed. Exit.
             logger.critical(f"Main, delete_orphan_services operation has failed")
             print(f'Check the log file: {log_filename}. Exiting...')

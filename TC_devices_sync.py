@@ -29,10 +29,10 @@ The new network service is added to the correct domain in the dashboard hierarch
 
 """
 
-__version__ = "0.5"
+__version__ = "0.6"
 __status__ = "beta"
 __author__ = "John Giles"
-__date__ = "2021 August 9th"
+__date__ = "2021 August 27th"
 __env__= "Windows/Linux"
 __Language__ = "Python v3"
 
@@ -364,14 +364,19 @@ def get_provider_list(provider_list_filename, logger):
                         #print(f'provider_list is: {provider_list}')
                     return True, provider_list
         else: # Use the default static list of provider names.
-            provider_list = ['Armstrong', 'ATT', 'axia', 'bell mobility', 'Bestel', 'Bruce Knob Telephone',
-            'Casair Broadband', 'CenturyLink', 'Cinnnati Bell', 'Cogeco', 'Cogen', 'Comcast',
-            'EIDNet', 'Frontier', 'GlobalGig', 'Granite', 'Interstate-Telecom', 'ITC', 'JBN Telephone Company',
-            'LTE-Corp', 'Lumen', 'LUS Fiber Broadband', 'MCSNet', 'Nemont Telephone', 'New Windsor Telephone',
-            'Norvado', 'Peninsula Fiber Network', 'Pioneer Telephone Broadband', 'PS_LTE', 'Rogers',
-            'sagenet', 'Sandwich MICROWAVE', 'SaskTel', 'shaw', 'Spacenet', 'Spectrum DIA', 'TBayTel',
-            'Telephone Broadband', 'Telmex', 'telus', 'Verizon', 'Videotron', 'Windstream',
-            'Windstream DSL', 'Woodstock Communications', 'Xplonet', 'Xplornet']
+            provider_list = ['Armstrong', 'ATT ', 'AT&T', 'Axia', 'Bell', 'bell mobility', 'Bestel',
+            'Bruce Knob Telephone', 'Casair Broadband', 'CenturyLink', 'Cinnnati Bell', 'Cogeco',
+            'Cogen', 'Comcast Broadband', 'Comcast', 'Consolidated Communications DIA', 'Consolidated',
+            'EIDNet', 'Elara', 'Frontier DIA', 'Frontier', 'GlobalGig Broadband', 'GlobalGig', 'Granite DIA',
+            'Granite 10M DIA', 'Granite 20M DIA', 'Granite', 'GTT Service', 'GTT Broadband', 'IBM', 'Interstate-Telecom', 'ITC',
+            'JBN Telephone Company',  'Lumen', 'LUS Fiber Broadband',
+            'MCSNet', 'Nemont Telephone', 'New Windsor Telephone', 'NorthernTel', 'Norvado', 'Peninsula Fiber Network',
+            'Pioneer Telephone Broadband', 'PS_LTE', 'Rogers', 'SageNet', 'Sandwich MICROWAVE', 'SaskTel',
+            'Shaw Broadband', 'Shaw', 'Spacenet', 'Spectrum DIA', 'Spectrum Enterprise', 'Spectrum',
+            'Starlink', 'TBayTel', 'TCT Broadband',
+            'Telephone Broadband', 'Telcel', 'Telmex', 'Telemex', 'Telus', 'Verizon Broadband',
+            'Verizon', 'Videotron', 'VzB', 'VZW', 'WiBand', 'Windstream',
+            'Windstream DSL', 'Woodstock Communications', 'Xplonet', 'Xplornet', 'Zayo']
             return True, provider_list
     except IOError as err:
         logger.error(f'IO Error opening file: {provider_list_filename} Error message: {err}')
@@ -379,6 +384,57 @@ def get_provider_list(provider_list_filename, logger):
     except Exception:
         logger.error('An exception has occurred in get_provider_list')
         return False, None
+
+def get_interface_type_list(interface_type_list_filename, logger):
+    """Look to see if a text file named the same as interface_type_list_filename is in the local directory.
+    If so, read that into a list of valid WAN interface types. if not, use a default static
+    list of WAN interface types.
+    :interface_type_list_filename: The name of the provider list text file.
+    :logger: An instance of the logger class to write to in case of an error.
+    :return: If successful, return status = True and the the WAN interface type list.
+    Return status = False and None if there are any errors or exceptions.
+    """
+    interface_type_list = []
+    try:
+        # if interface_type_list.txt exists, read in contents to produce the list of WAN interface types.
+        if os.path.isfile(interface_type_list_filename):
+            with open(interface_type_list_filename, 'r') as fh:
+                logger.info(f'WAN interface type list file: {interface_type_list_filename} was found and opened')
+                lines = fh.readlines()
+                if lines == None:
+                    logger.error(f'There are no lines in the WAN interface type list text file: {interface_type_list_filename}')
+                    return False, None
+                else:
+                    for line in lines:
+                        line = line.strip()
+                        interface_type_list.append(line)
+                        #print(f'interface_type_list is: {interface_type_list}')
+                    return True, interface_type_list
+        else: # Use the default static list of WAN interface types.
+            interface_type_list = ['Bell T1', 'Bell cell', 'Cell Modem', "cellular modem",
+             'cell #', 'CenturyLink T1', 'CWAN', 'DSL', 'FlexVPN', 'GRE Tunnel', 'IPVPN',
+             'LTE-', 'MPLS', 'MultiPoint',
+             'PFN network DIA', 'rodgers cell', 'Verizon cell', 'VZW cell', 'VSAT']
+            return True, interface_type_list
+    except IOError as err:
+        logger.error(f'IO Error opening file: {interface_type_filename} Error message: {err}')
+        return False, None
+    except Exception:
+        logger.error('An exception has occurred in interface_type_list')
+        return False, None
+
+def check_illegal_characters(test, logger):
+    """Iterate through all the characters in the the string test and look for any illegal
+    characters. If an illegal character is found, remove it. Return the processed string.
+    :test: A string to process for illegal characters.
+    :logger: An instance of the logger class to write to in case of an error.
+    Return the processed test string.
+    """
+    for char in test:
+        if char in "[@!#$%^&*+=<>?|}{~]'":
+            test = test.replace(char, '')
+            logger.info(f'removed illegal char: {char}')
+    return test
 
 def get_devices(session, logger):
     """Use the nG1 API to get the current device configuration for MIBII devices in the system.
@@ -429,10 +485,11 @@ def get_devices(session, logger):
         logger.exception(f'URL sent is: {url}')
         return False, None
 
-def get_device_wan_interfaces(devices_config_data, provider_list, session, logger):
+def get_device_wan_interfaces(devices_config_data, interface_type_list, provider_list, session, logger):
     """Use the nG1 API to get all of the interface configuration that have "WAN" in the name
     for each MIB II device in the system. Append each WAN interface to the devices_config_data dict.
-    :devices_config_data: A dictionay that contains the current nG1 active MIB II devices.
+    :devices_config_data: A dictionary that contains the current nG1 active MIB II devices.
+    :interface_type_list: A list of interface types (e.g., cellular modem, MPLS, etc.)
     :provider_list: A list of service provider names.
     :session: An instance of the ApiSession class that holds all our API session params.
     :logger: An instance of the logger class to write to in case of an error.
@@ -445,7 +502,7 @@ def get_device_wan_interfaces(devices_config_data, provider_list, session, logge
             #print(f"Inside, devices is {device}")
             device_name = device['deviceName']
             #print(f"Inside, deviceName is: {device_name}")
-            status, interfaces_data = get_interfaces(device_name, provider_list, session, logger)
+            status, interfaces_data = get_interfaces(device_name, interface_type_list, provider_list, session, logger)
             #print('\ninterfaces_data is:')
             #pprint.pprint(interfaces_data)
             if status == False:
@@ -460,15 +517,19 @@ def get_device_wan_interfaces(devices_config_data, provider_list, session, logge
                 #interface_name_to_modify = interface['alias']
                 status, modified_interface_name = modify_interface_name(interface_name_to_modify, logger)
                 if status == False: # We were unable to modify the interface_name, use the original name
-                    logger.error(f"Unable to modify MIBII device: {device_name} interface name: {interface_name_to_modify}")
+                    logger.error(f"Unable to translate interface port info for device: {device_name} interface name: {interface_name_to_modify}")
+                    interface['interfaceName'] = 'no_if_port'
                     device['wan_interfaces'].append(interface)
                 else: # The modification was successful, use the modified interface name
-                    print(f"{modified_interface_name=}")
+                    #print(f"{modified_interface_name=}")
                     device['wan_interfaces'].append(interface)
                     device['wan_interfaces'][0]['interfaceName'] = modified_interface_name
+                device['wan_interfaces'][0]['RawInterfaceName'] = interface_name_to_modify
                 break # We want to only process the first WAN interface.
 
             device['wanInterface'] = device['wan_interfaces'][0]['interfaceName']
+            device['RawWanInterface'] = device['wan_interfaces'][0]['RawInterfaceName']
+            device['interfaceType'] = device['wan_interfaces'][0]['interfaceType']
             device['wanSpeed'] = device['wan_interfaces'][0]['interfaceSpeed']
             device['interfaceNumber'] = device['wan_interfaces'][0]['interfaceNumber']
             device['interfaceAlias'] = device['wan_interfaces'][0]['alias']
@@ -498,66 +559,73 @@ def modify_interface_name(interface_name, logger):
     :return: If successful, return status = True and the modified interface name.
     Return status = False and None if there are any errors or exceptions.
     """
-    if 'GigabitEthernet' in interface_name:
-        interface_name = 'Gi' + interface_name.partition('GigabitEthernet')[2]
-    elif 'gigabitEthernet' in interface_name:
-        interface_name = 'Gi' + interface_name.partition('gigabitEthernet')[2]
-    elif 'gigabitethernet' in interface_name:
-        interface_name = 'Gi' + interface_name.partition('gigabitethernet')[2]
-    elif 'FastEthernet' in interface_name:
-        interface_name = 'Fa' + interface_name.partition('FastEthernet')[2]
-    elif 'fastEthernet' in interface_name:
-        interface_name = 'Fa' + interface_name.partition('fastEthernet')[2]
-    elif 'fastethernet' in interface_name:
-        interface_name = 'Fa' + interface_name.partition('fastethernet')[2]
-    elif 'Tu1' in interface_name and 'Tu2' not in interface_name:
-        interface_name = 'Tu1' + interface_name.partition('Tu1')[2]
-    elif 'Tu2' in interface_name and 'Tu1' not in interface_name:
-        interface_name = 'Tu2' + interface_name.partition('Tu2')[2]
-    elif 'Tun1' in interface_name and 'Tun2' not in interface_name:
-        interface_name = 'Tu1' + interface_name.partition('Tun1')[2]
-    elif 'Tun2' in interface_name and 'Tun1' not in interface_name:
-        interface_name = 'Tu2' + interface_name.partition('Tun2')[2]
-    elif 'Tu1,Tu2' in interface_name in interface_name:
-        interface_name = 'Tu1,Tu2' + interface_name.partition('Tu1,Tu2')[2]
-    elif 'Tun1,Tun2' in interface_name in interface_name:
-        interface_name = 'Tu1,Tu2' + interface_name.partition('Tun1,Tun2')[2]
-    elif 'Tunnel' in interface_name:
-        interface_name = 'Tu' + interface_name.partition('Tunnel')[2]
-    elif 'tunnel' in interface_name:
-        interface_name = 'Tu' + interface_name.partition('tunnel')[2]
-    elif 'Serial' in interface_name:
-        interface_name = 'Se' + interface_name.partition('Serial')[2]
-    elif 'serial' in interface_name:
-        interface_name = 'Se' + interface_name.partition('serial')[2]
-    elif 's0' in interface_name:
-        interface_name = 'Se' + interface_name.partition('s0')[2]
-    elif 's1' in interface_name:
-        intinterface_name = 'Se' + interface_name.partition('s1')[2]
-    elif 's2' in interface_name:
-        interface_name = 'Se' + interface_name.partition('s2')[2]
-    elif 's3' in interface_name:
-        iinterface_name = 'Se' + interface_name.partition('s3')[2]
-    elif 'TEN' in interface_name:
-        interface_name = 'Te' + interface_name.partition('TEN')[2]
-    elif 'Ten' in interface_name:
-        interface_name = 'Te' + interface_name.partition('Ten')[2]
-    elif 'ten' in interface_name:
-        interface_name = 'Te' + interface_name.partition('ten')[2]
-    elif 'Multilink' in interface_name:
-        interface_name = 'Mu' + interface_name.partition('Multilink')[2]
-    elif 'multilink' in interface_name:
-        interface_name = 'Mu' + interface_name.partition('multilink')[2]
-    else:
-        logger.error(f'No match for interface type in interface name: {interface_name}')
+    try:
+        if 'GigabitEthernet' in interface_name:
+            interface_name = 'Gi' + interface_name.partition('GigabitEthernet')[2]
+        elif 'gigabitEthernet' in interface_name:
+            interface_name = 'Gi' + interface_name.partition('gigabitEthernet')[2]
+        elif 'gigabitethernet' in interface_name:
+            interface_name = 'Gi' + interface_name.partition('gigabitethernet')[2]
+        elif 'exs-1 g1/' in interface_name:
+            interface_name = 'Gi' + interface_name.partition('exs-1 g')[2]
+        elif 'FastEthernet' in interface_name:
+            interface_name = 'Fa' + interface_name.partition('FastEthernet')[2]
+        elif 'fastEthernet' in interface_name:
+            interface_name = 'Fa' + interface_name.partition('fastEthernet')[2]
+        elif 'fastethernet' in interface_name:
+            interface_name = 'Fa' + interface_name.partition('fastethernet')[2]
+        elif 'Tu1' in interface_name and 'Tu2' not in interface_name:
+            interface_name = 'Tu1' + interface_name.partition('Tu1')[2]
+        elif 'Tu2' in interface_name and 'Tu1' not in interface_name:
+            interface_name = 'Tu2' + interface_name.partition('Tu2')[2]
+        elif 'Tun1' in interface_name and 'Tun2' not in interface_name:
+            interface_name = 'Tu1' + interface_name.partition('Tun1')[2]
+        elif 'Tun2' in interface_name and 'Tun1' not in interface_name:
+            interface_name = 'Tu2' + interface_name.partition('Tun2')[2]
+        elif 'Tu1,Tu2' in interface_name in interface_name:
+            interface_name = 'Tu1,Tu2' + interface_name.partition('Tu1,Tu2')[2]
+        elif 'Tun1,Tun2' in interface_name in interface_name:
+            interface_name = 'Tu1,Tu2' + interface_name.partition('Tun1,Tun2')[2]
+        elif 'Tunnel' in interface_name:
+            interface_name = 'Tu' + interface_name.partition('Tunnel')[2]
+        elif 'tunnel' in interface_name:
+            interface_name = 'Tu' + interface_name.partition('tunnel')[2]
+        elif 'Serial' in interface_name:
+            interface_name = 'Se' + interface_name.partition('Serial')[2]
+        elif 'serial' in interface_name:
+            interface_name = 'Se' + interface_name.partition('serial')[2]
+        elif 's0' in interface_name:
+            interface_name = 'Se' + interface_name.partition('s0')[2]
+        elif 's1' in interface_name:
+            intinterface_name = 'Se' + interface_name.partition('s1')[2]
+        elif 's2' in interface_name:
+            interface_name = 'Se' + interface_name.partition('s2')[2]
+        elif 's3' in interface_name:
+            iinterface_name = 'Se' + interface_name.partition('s3')[2]
+        elif 'TenGigabitEthernet' in interface_name:
+            interface_name = 'Te' + interface_name.partition('TenGigabitEthernet')[2]
+        elif 'TEN' in interface_name:
+            interface_name = 'Te' + interface_name.partition('TEN')[2]
+        elif 'Ten' in interface_name:
+            interface_name = 'Te' + interface_name.partition('Ten')[2]
+        elif 'ten' in interface_name:
+            interface_name = 'Te' + interface_name.partition('ten')[2]
+        elif 'Multilink' in interface_name:
+            interface_name = 'Mu' + interface_name.partition('Multilink')[2]
+        elif 'multilink' in interface_name:
+            interface_name = 'Mu' + interface_name.partition('multilink')[2]
+        else:
+            interface_name = 'no_if_port' # Default port info if no match.
+    except Exception: # Handle other unexpected errors.
+        logger.exception(f'modify_interface_name for: {interface_name} failed')
         return False, None
-
     return True, interface_name
 
-def get_interfaces(device_name, provider_list, session, logger):
+def get_interfaces(device_name, interface_type_list, provider_list, session, logger):
     """Use the nG1 API to get the current interface configuration for each MIBII device in the system.
     If the interface name includes 'WAN', add it to the list of interfaces to return.
     :device_name: A string that is the name of nG1 device.
+    :interface_type_list: A list of interface types (e.g., cellular modem, MPLS, etc.)
     :provider_list: A list of service provider names.
     :session: An instance of the ApiSession class that holds all our API session params.
     :logger: An instance of the logger class to write to in case of an error.
@@ -577,25 +645,62 @@ def get_interfaces(device_name, provider_list, session, logger):
             interface_data=json.loads(get.text)
             filtered_interface_data = {'interfaceConfigurations':[]}
             for interface in interface_data['interfaceConfigurations']:
-                #print('interface data is:')
+                #print('\ninterface data is:')
                 #pprint.pprint(interface)
                 if 'WAN' in interface['interfaceName']: # Only include WAN interfaces
-                #if 'WAN' in interface['alias']: # JUST FOR TESTING
+                #if 'WAN' in interface['alias']: #JUST FOR TESTING
                     # Correct for bug in nG1 API
+                    #print('I found WAN in the interface name')
                     interface['interfaceLinkType'] = interface['portSpeed']
-                    # Note: For production switch back from alias to interfaceName!!
-                    interface['provider'] = ''
+
+                    interface['provider'] = 'no_prov' # Default string in case we don't get a match
                     for provider in provider_list:
-                        # print(f'provider is: {provider}')
+                        # Note: For production switch back from alias to interfaceName!!
                         #if provider.lower() in interface['alias'].lower(): #JUST FOR TESTING
                         if provider.lower() in interface['interfaceName'].lower():
-                            interface['provider'] = provider
-                            break
-                    if interface['provider'] == None:
-                        interface['provider'] == 'no_provider'
+                            if provider.lower() == 'vzb':
+                                interface['provider'] = 'Verizon'
+                            elif provider.lower() == 'wiband':
+                                interface['provider'] = 'WiBand Broadband'
+                            elif provider.lower() == 'att ':
+                                interface['provider'] = 'ATT'
+                            else:
+                                interface['provider'] = provider
+                            #print(f'I found provider: {provider}')
+                            break # Stop looking for the provider
+                    #print(f"provider name inserted is: {interface['provider']}")
+
+                    interface['interfaceType'] = 'no_if_type' # Default string in case we don't get a match
+                    for interface_type in interface_type_list:
+                        # Note: For production switch back from alias to interfaceName!!
+                        #if interface_type.lower() in interface['alias'].lower(): #JUST FOR TESTING
+                        if interface_type.lower() in interface['interfaceName'].lower():
+                            if interface_type.lower() == 'ipvpn':
+                                interface['interfaceType'] = 'MPLS'
+                            elif interface_type.lower() == 'bell t1':
+                                interface['interfaceType'] = 'T1'
+                            elif interface_type.lower() == 'centurylink t1':
+                                interface['interfaceType'] = 'T1'
+                            elif interface_type.lower() == 'cell #':
+                                interface['interfaceType'] = 'cell'
+                            elif interface_type.lower() == 'bell cell':
+                                interface['interfaceType'] = 'cell'
+                            elif interface_type.lower() == 'verizon cell':
+                                interface['interfaceType'] = 'cell'
+                            elif interface_type.lower() == 'rogers cell':
+                                interface['interfaceType'] = 'cell'
+                            elif interface_type.lower() == 'vzw cell':
+                                interface['interfaceType'] = 'cell'
+                            elif interface_type.lower() == 'LTE-':
+                                interface['interfaceType'] = 'LTE'
+                            else:
+                                interface['interfaceType'] = interface_type
+                            #print(f'I found interface_type: {interface_type}')
+                            break # Stop looking for the interface_type
 
                     # Only include interfaces that have "WAN" in the interface name.
                     filtered_interface_data['interfaceConfigurations'].append(interface)
+                    break # Stop looking for the WAN interface
             if filtered_interface_data == {'interfaceConfigurations':[]}:
                 #print(f"I did not find any WAN interfaces for device: {device_name}")
                 return True, None # Signal the calling function that no WAN interfaces were found
@@ -812,9 +917,11 @@ def convert_json_dict_to_dataframe(config_data, config_type, logger):
     if config_type == 'sites':
         column_headers = ['id','name', 'addresses', 'speedKbps']
     elif config_type == 'devices':
-        column_headers = ['deviceName', 'deviceIPAddress', 'wanInterface', 'interfaceAlias', 'wanSpeed', 'interfaceNumber', 'wanSpeedUnits', 'wanProvider', 'alertProfileID']
+        column_headers = ['deviceName', 'deviceIPAddress', 'wanInterface', 'RawWanInterface', 'interfaceType',
+        'interfaceAlias', 'wanSpeed', 'interfaceNumber', 'wanSpeedUnits', 'wanProvider', 'alertProfileID']
     elif config_type == 'interfaces':
-        column_headers = ['deviceName', 'deviceIPAddress', 'interfaceName', 'interfaceNumber', 'interfaceSpeed', 'interfaceLinkType', 'status']
+        column_headers = ['deviceName', 'deviceIPAddress', 'interfaceName', 'interfaceNumber',
+        'interfaceSpeed', 'interfaceLinkType', 'status']
     elif config_type == 'client_comm':
         column_headers = ['CHANGE ME']
     elif config_type == 'apps':
@@ -844,7 +951,7 @@ def convert_json_dict_to_dataframe(config_data, config_type, logger):
         return False, None
 
 def write_dataframe_to_csv(df, csv_filename, logger):
-    """Write the device and interface dataframe to a CSV file.
+    """Write the Pandas dataframe to a CSV file.
     :df: The dataframe of nG1 config data collected.
     :csv_filename: The name of the CSV file to write to.
     :logger: An instance of the logger object to write to in case of an error.
@@ -867,7 +974,7 @@ def write_dataframe_to_csv(df, csv_filename, logger):
     except Exception:
         logger.exception(f'Write dataframe to CSV file: {csv_filename} has failed"')
         return False
-
+    logger.info(f'Write dataframe to CSV file: {csv_filename} Successful"')
     return True
 
 def find_intersection_solarwinds_to_current_device_interfaces(solarwinds_current_df, right_now_df, logger):
@@ -986,7 +1093,7 @@ def convert_wan_speed_to_units(interface_speed, logger):
     elif interface_speed == '2600000':
         wan_units = '2.6 Mbps'
     elif interface_speed == '2800000':
-        wan_units = '2.6 Mbps'
+        wan_units = '2.8 Mbps'
     elif interface_speed == '3000000':
         wan_units = '3 Mbps'
     elif interface_speed == '3500000':
@@ -1306,7 +1413,7 @@ def create_network_service_configs(session, is_set_config_true, MIBII_network_se
     :session: An instance of the ApiSession class that holds all our API session params.
     :is_set_config_true: A boolean that tells the system to perform set operations if True.
     :MIBII_network_services: A list of network service names ending in '_MIB Polling'.
-    :net_srv_add_candidates_filename: The name of the csv file to write the network candidates for deletion into.
+    :net_srv_add_candidates_filename: The name of the csv file to write the candidates for new network service creation into.
     :intersection_df: The dataframe that holds matching MIBII devices in nG1 to those listed in the solarwinds_filename.
     :logger: An instance of the logger object to write to in case of an error.
     :return: If successful, return status = True, the modified intersection_df, a list of valid_MIBII_network_service_names
@@ -1328,6 +1435,7 @@ def create_network_service_configs(session, is_set_config_true, MIBII_network_se
             for index, row in intersection_df.iterrows():
                 site = row['Site']
                 provider = row['wanProvider']
+                interface_type = row['interfaceType']
                 corpscada_type = row['CorpSCADA_Type']
                 if corpscada_type == "corp_and_scada":
                     corpscada_type = "Corp/SCADA"
@@ -1338,7 +1446,9 @@ def create_network_service_configs(session, is_set_config_true, MIBII_network_se
                 alert_profile_id = int(row['alertProfileID'])
                 interface_number = int(row['interfaceNumber'])
                 interface_alias = row['interfaceAlias']
-                network_service_name = site + '_' + provider + ' MPLS-' + corpscada_type + ' WAN (' + device_name + ' if: ' + wan_interface + '-' + wan_speed_units + ')_MIB Polling'
+                network_service_name = site + '_' + provider + ' ' + interface_type + '-' + corpscada_type + ' WAN (' + device_name + ' if: ' + wan_interface + '-' + wan_speed_units + ')_MIB Polling'
+                # Check for illegal characters.
+                network_service_name = check_illegal_characters(network_service_name, logger)
                 intersection_df.at[index, "netServiceName"] = network_service_name
 
                 svcs_dict={}
@@ -1367,11 +1477,11 @@ def create_network_service_configs(session, is_set_config_true, MIBII_network_se
 
                 valid_MIBII_network_service_names.append(network_service_name)
 
-                # Check to see if this network service already exists.
+                # Check to see if this device_name is already in an existing network service name.
                 network_service_exists = False
                 if MIBII_network_services != None:
                     for existing_network_service_name in MIBII_network_services:
-                        if existing_network_service_name == network_service_name:
+                        if device_name in existing_network_service_name:
                             network_service_exists = True
                             break
                 # This network service does not exist.
@@ -1885,7 +1995,7 @@ def create_domains(session, intersection_df, wan_domain_id, new_MIBII_network_se
 
 # -----------------------------------------------------------------------------------------------------------------
 def main():
-    prog_version = '0.2'
+    prog_version = '0.4-alpha'
     now = datetime.now()
     date_time = now.strftime("%Y_%m_%d_%H%M%S") # Used for timestamping filenames.
 
@@ -1921,6 +2031,9 @@ def main():
     cred_filename = 'CredFile.ini'
     # Hardcoding the filename for the list of provider names. This is optional. If not found a static default list will be used.
     provider_list_filename = 'provider_list.txt'
+    # Hardcoding the filename for the list of possible WAN interface types. This is optional. If not found a static default list will be used.
+    interface_type_list_filename = 'interface_type_list.txt'
+
     os_type = sys.platform
     if os_type == 'linux':
         ng1key_file = '.ng1key.key' # hide the probekey file if Linux.
@@ -1955,6 +2068,13 @@ def main():
         print(f'Check the log file: {log_filename}. Exiting...')
         sys.exit(1)
 
+    # Get the list of WAN interface types either from a local file or from a static default list.
+    status, interface_type_list = get_interface_type_list(interface_type_list_filename, logger)
+    if status == False: # Getting the list of interface types has failed. Exit.
+        logger.critical(f"Main, get_interface_type_list has failed")
+        print(f'Check the log file: {log_filename}. Exiting...')
+        sys.exit(1)
+
     # Get all the Active or Inactive MIB II devices currently configured in nG1.
     status, devices_config_data = get_devices(session, logger)
     if status == False: # get_devices has failed. Exit.
@@ -1966,7 +2086,7 @@ def main():
     #pprint.pprint(devices_config_data)
 
     # For each MIB II device in nG1, append the WAN interfaces to the devices_config_data dict.
-    status, devices_config_data = get_device_wan_interfaces(devices_config_data, provider_list, session, logger)
+    status, devices_config_data = get_device_wan_interfaces(devices_config_data, interface_type_list, provider_list, session, logger)
     if status == False: # Getting the MIBII device WAN interfaces has failed.
         logger.critical(f"Main, get_device_wan_interfaces has failed")
         print(f'Check the log file: {log_filename}. Exiting...')
@@ -2013,11 +2133,11 @@ def main():
         #print(f'Check the log file: {log_filename}. Exiting...')
         #sys.exit(1)
 
-    # status = write_dataframe_to_csv(ng1_devices_df, device_interfaces_config_current_filename, logger)
-    #if status == False: # The write dataframe to CSV file operation has failed. Exit.
-        #logger.critical(f"Main, write_dataframe_to_csv to CSV file: {device_interfaces_config_current_filename} has failed")
-        #print(f'Check the log file: {log_filename}. Exiting...')
-        #sys.exit(1)
+    status = write_dataframe_to_csv(ng1_devices_df, device_interfaces_config_current_filename, logger)
+    if status == False: # The write dataframe to CSV file operation has failed. Exit.
+        logger.critical(f"Main, write_dataframe_to_csv to CSV file: {device_interfaces_config_current_filename} has failed")
+        print(f'Check the log file: {log_filename}. Exiting...')
+        sys.exit(1)
 
     status, solarwinds_current_df = convert_current_solarwinds_CSV_to_dataframe(solarwinds_filename, logger)
     if status == False: # Conversion of current solarwinds CSV to a pandas dataframe has failed.
